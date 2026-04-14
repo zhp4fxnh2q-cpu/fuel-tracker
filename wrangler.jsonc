@@ -1,0 +1,22 @@
+{
+  "name": "fuel-tracker",
+  "main": "src/worker/index.js",
+  "compatibility_date": "2026-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "fuel-db",
+      "database_id": "685d6748-c627-4802-886c-aa8e54d17b57"
+    }
+  ],
+  "vars": {
+    "USDA_API_KEY": "cXypxwWsH8UgvLf2duk70tXeWbjwJyhftAkJbYC5"
+  }
+  // Secrets (set via `npx wrangler secret put`):
+  // ANTHROPIC_API_KEY
+}
