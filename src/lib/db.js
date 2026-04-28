@@ -23,7 +23,7 @@ function isMissingTable(err) {
     err.code === '42P01' ||
     msg.includes('does not exist') ||
     msg.includes('not found in schema cache') ||
-    msg.includes('relation') && msg.includes('does not exist')
+    (msg.includes('relation') && msg.includes('does not exist'))
   );
 }
 

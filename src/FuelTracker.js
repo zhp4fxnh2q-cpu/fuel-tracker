@@ -5,7 +5,7 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { TABS, DEFAULT_PROFILE } from './lib/constants';
-import { fetchSettings, saveSettings, defaultSettings } from './lib/db';
+import { fetchSettings, saveSettings } from './lib/db';
 
 export default function FuelTracker({ session, onSignOut }) {
   const [activeTab, setActiveTab] = useState('today');
