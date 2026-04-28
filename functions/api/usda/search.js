@@ -42,6 +42,14 @@ function pickNutrientsFromSearchHit(hit) {
   return out;
 }
 
+/** USDA Foundation foods sometimes omit Energy in search results. Estimate
+ * from Atwater factors when kcal is 0 but macros are present. */
+function computeKcalFallback(m) {
+  if (m.kcal && m.kcal > 0) return m.kcal;
+  const est = (m.protein_g || 0) * 4 + (m.carbs_g || 0) * 4 + (m.fat_g || 0) * 9;
+  return Math.round(est);
+}
+
 export async function onRequestGet({ request, env }) {
   const url = new URL(request.url);
   const q = (url.searchParams.get('q') || '').trim();
@@ -70,7 +78,7 @@ export async function onRequestGet({ request, env }) {
       name: f.description,
       brand: f.brandOwner || f.brandName || null,
       dataType: f.dataType,
-      per100g: pickNutrientsFromSearchHit(f),
+      per100g: ((m) => ({ ...m, kcal: computeKcalFallback(m) }))(pickNutrientsFromSearchHit(f)),
       _relevanceIdx: 0, // populated below
     }))
     .filter((r) => {

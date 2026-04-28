@@ -77,6 +77,14 @@ function buildPortions(food) {
   });
 }
 
+/** USDA Foundation foods sometimes omit Energy in search results. Estimate
+ * from Atwater factors when kcal is 0 but macros are present. */
+function computeKcalFallback(m) {
+  if (m.kcal && m.kcal > 0) return m.kcal;
+  const est = (m.protein_g || 0) * 4 + (m.carbs_g || 0) * 4 + (m.fat_g || 0) * 9;
+  return Math.round(est);
+}
+
 export async function onRequestGet({ params, env }) {
   const fdcId = params.fdcId;
   if (!fdcId) return json({ error: 'missing fdcId' }, 400);
@@ -100,7 +108,7 @@ export async function onRequestGet({ params, env }) {
     name: food.description,
     brand: food.brandOwner || food.brandName || null,
     dataType: food.dataType,
-    per100g: per100gFromFoodNutrients(food),
+    per100g: ((m) => ({ ...m, kcal: computeKcalFallback(m) }))(per100gFromFoodNutrients(food)),
     portions: buildPortions(food),
   });
 }
