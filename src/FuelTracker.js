@@ -201,7 +201,7 @@ function SettingsScreen({ onSignOut }) {
             <div className="fuel-label" style={{ marginBottom: 8 }}>Profile</div>
             <SettingRow>
               <Field label="Weight (lbs)" value={profile.weight_lbs} onChange={(v) => onChange('weight_lbs', Number(v))} type="number" />
-              <Field label="Height (in)" value={profile.height_in} onChange={(v) => onChange('height_in', Number(v))} type="number" />
+              <HeightInput totalInches={profile.height_in} onChange={(v) => onChange('height_in', v)} />
             </SettingRow>
             <SettingRow>
               <Field label="Age" value={profile.age} onChange={(v) => onChange('age', Number(v))} type="number" />
@@ -265,6 +265,38 @@ function Field({ label, value, onChange, type = 'text', options, step }) {
           style={fieldStyle}
         />
       )}
+    </label>
+  );
+}
+
+function HeightInput({ totalInches, onChange }) {
+  const safe = Number.isFinite(totalInches) ? totalInches : 0;
+  const ft = Math.floor(safe / 12);
+  const inches = Math.round(safe - ft * 12);
+  const update = (newFt, newIn) => onChange(newFt * 12 + newIn);
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span className="fuel-label">Height</span>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="number" min="0" max="9" inputMode="numeric"
+            value={ft}
+            onChange={(e) => update(Math.max(0, Number(e.target.value || 0)), inches)}
+            style={{ ...fieldStyle, width: '100%' }}
+          />
+          <span style={{ color: 'var(--text-tertiary)', fontSize: 12, letterSpacing: '0.06em' }}>ft</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="number" min="0" max="11" inputMode="numeric"
+            value={inches}
+            onChange={(e) => update(ft, Math.min(11, Math.max(0, Number(e.target.value || 0))))}
+            style={{ ...fieldStyle, width: '100%' }}
+          />
+          <span style={{ color: 'var(--text-tertiary)', fontSize: 12, letterSpacing: '0.06em' }}>in</span>
+        </div>
+      </div>
     </label>
   );
 }
