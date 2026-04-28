@@ -9,7 +9,7 @@
  *   3) "Log" → insert into fuel_food_log → onLogged(entry) → parent refreshes
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { searchUsda, getUsdaFood, macrosAtGrams } from '../lib/usda';
+import { searchUsda, getUsdaFood, macrosAtGrams, detailFromSearchHit } from '../lib/usda';
 import { addEntry, todayIso } from '../lib/foodLog';
 import { SOURCE } from '../lib/constants';
 
@@ -81,12 +81,23 @@ export default function AddFoodSheet({ open, mealSlot, onClose, onLogged }) {
     try {
       const detail = await getUsdaFood(hit.fdcId);
       setFoodDetail(detail);
-      setPortionIdx(detail.portions.length > 2 ? 2 : 0); // prefer first natural portion if available
+      setPortionIdx(detail.portions.length > 2 ? 2 : 0); // prefer first natural portion
       setAmount(1);
     } catch (e) {
-      setError(e.message);
-      setFoodDetail(null);
-      setStep('search');
+      // USDA's /food/{fdcId} 404s on some Foundation entries even though search
+      // returned them. Fall back to per-100g macros from the search hit + plain
+      // gram portions. User can still log accurately by weight.
+      if (e.status === 404) {
+        const detail = detailFromSearchHit(hit);
+        setFoodDetail(detail);
+        setPortionIdx(0);
+        setAmount(100); // sensible default for gram-only — 100 g
+        setError(null);
+      } else {
+        setError(e.message);
+        setFoodDetail(null);
+        setStep('search');
+      }
     }
   };
 
@@ -237,6 +248,17 @@ function QuantityStep({ foodDetail, portionIdx, amount, macros, grams, saving, m
         </div>
       </div>
 
+      {foodDetail.fallbackFromSearch && (
+        <div style={{
+          marginBottom: 12, padding: '8px 12px',
+          background: 'var(--warn-fill)',
+          border: '1px solid rgba(245,158,11,0.32)',
+          borderRadius: 10, fontSize: 12, color: 'var(--warn)', lineHeight: 1.4,
+        }}>
+          USDA didn't have a detailed serving list for this entry. Macros are
+          accurate per 100g — pick a gram amount below.
+        </div>
+      )}
       <div className="fuel-label" style={{ marginBottom: 8 }}>Serving</div>
       <select
         value={portionIdx}
