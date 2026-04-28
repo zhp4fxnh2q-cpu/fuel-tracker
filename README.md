@@ -49,7 +49,7 @@ After running, reload the FUEL app — Settings will switch from the
 ## Deployment
 
 GitHub repo: `zhp4fxnh2q-cpu/fuel-tracker` (private)
-Live URL: `https://fuel-tracker.pages.dev` (after Cloudflare Pages connection)
+Live URL: `https://rdnafuel.pages.dev` (after Cloudflare Pages connection)
 
 Push pattern from a Claude session:
 

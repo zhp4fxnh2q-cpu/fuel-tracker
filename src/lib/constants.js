@@ -5,7 +5,7 @@
 
 // Auth gate
 export const ALLOWED_EMAILS = ['rogersdna15@gmail.com', 'david@providenceswfl.com'];
-export const GOOGLE_CLIENT_ID = '914866581244-pte9q0n3ofonjio6vd28jvluj2abu5sa.apps.googleusercontent.com';
+export const GOOGLE_CLIENT_ID = '891453787242-vblf8lv91g5eamr9u6252aukhii5fpk4.apps.googleusercontent.com';
 
 // Default profile (David's actual stats — bootstraps fuel_settings on first run)
 export const DEFAULT_PROFILE = {
