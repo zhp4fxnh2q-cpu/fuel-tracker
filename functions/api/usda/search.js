@@ -42,6 +42,26 @@ function pickNutrientsFromSearchHit(hit) {
   return out;
 }
 
+/** Naturalness score: lower is more natural. Encourages "Egg, whole, raw, fresh"
+ * to beat "Egg, whole, dried" without us having to maintain a curated list. */
+const NATURAL_BOOST_WORDS = ['raw', 'fresh', 'uncooked', 'whole'];
+const PROCESSED_DEMOTE_WORDS = [
+  'dried', 'powder', 'powdered', 'substitute', 'imitation',
+  'low-fat', 'fat-free', 'fortified', 'enriched', 'flavored',
+  'instant', 'breaded', 'frozen', 'preserved', 'canned',
+  'with added', 'with salt',
+];
+
+function naturalnessScore(name) {
+  const lower = (name || '').toLowerCase();
+  let score = 0;
+  for (const w of NATURAL_BOOST_WORDS) if (lower.includes(w)) score -= 1;
+  for (const w of PROCESSED_DEMOTE_WORDS) if (lower.includes(w)) score += 2;
+  // Cooking method demotions
+  for (const w of ['cooked', 'fried', 'scrambled', 'poached', 'omelet']) if (lower.includes(w)) score += 1;
+  return score;
+}
+
 /** USDA Foundation foods sometimes omit Energy in search results. Estimate
  * from Atwater factors when kcal is 0 but macros are present. */
 function computeKcalFallback(m) {
@@ -61,7 +81,7 @@ export async function onRequestGet({ request, env }) {
   usdaUrl.searchParams.set('query', q);
   // No dataType filter, no sortBy — let USDA's relevance ranking work, then
   // we re-bucket below.
-  usdaUrl.searchParams.set('pageSize', '80');
+  usdaUrl.searchParams.set('pageSize', '200');
 
   let data;
   try {
@@ -106,6 +126,9 @@ export async function onRequestGet({ request, env }) {
     const sa = startsWithQuery(a.name) ? 0 : 1;
     const sb = startsWithQuery(b.name) ? 0 : 1;
     if (sa !== sb) return sa - sb;
+    const na = naturalnessScore(a.name);
+    const nb = naturalnessScore(b.name);
+    if (na !== nb) return na - nb;
     return a._relevanceIdx - b._relevanceIdx;
   });
 
