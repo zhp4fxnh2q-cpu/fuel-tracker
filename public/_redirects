@@ -1,0 +1,2 @@
+/api/*  https://fuel-worker.davidrogers.workers.dev/api/:splat  200
+/*      /index.html                                               200

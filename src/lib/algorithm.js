@@ -1,536 +1,396 @@
 /**
- * Adaptive TDEE algorithm for calorie tracking
- * Blends formula-based TDEE with data-driven TDEE from user history
- * Pure module with zero UI dependencies
- * @module lib/algorithm
+ * FUEL — Adaptive TDEE algorithm.
+ * Pure functions, zero UI deps. All inputs imperial (lbs).
+ *
+ * Building blocks:
+ *   updateSmoothedWeight()    — EWMA weight smoothing
+ *   formulaTDEE()             — Mifflin-St Jeor cold-start
+ *   backSolveTDEE()           — actual TDEE from 14-day weight + intake history
+ *   blendedTDEE()             — formula→data ramp during cold start
+ *   confidenceScore()         — low | medium | high based on data quality
+ *   makeDailyTargets()        — split TDEE into training/rest day kcal + macros
+ *   weeklyReview()            — Sunday adjustment with ±200 kcal cap and floors
+ *   intradayRebalance()       — smart rebalance with floors (David's choice)
+ *   checkDietBreakNeeded()    — diet-break prompt after 8 weeks cutting
  */
-
 import {
   EWMA_ALPHA,
+  KCAL_PER_LB,
+  REVIEW_WINDOW_DAYS,
   MIN_DAYS_FOR_TDEE,
   COLD_START_DAYS,
-  KCAL_PER_LB,
   TRAINING_DAY_BONUS,
-  MIN_CALORIES,
-  ADJUSTMENT_STEP,
-} from './constants.js';
+  MAX_WEEKLY_KCAL_CHANGE,
+  DIET_BREAK_AFTER_WEEKS,
+  PHASE,
+} from './constants';
 
-/**
- * Update smoothed weight using Exponential Weighted Moving Average
- * @param {number} newWeight - New weight measurement in lbs
- * @param {number} previousSmoothed - Previous smoothed weight value
- * @param {number} [alpha=0.2] - EWMA alpha parameter (0-1, lower = more smoothing)
- * @returns {number} Updated smoothed weight
- * @example
- * const smoothed = updateSmoothedWeight(220, 219.5, 0.2)
- * // smoothed = 219.6
- */
-export function updateSmoothedWeight(newWeight, previousSmoothed, alpha = EWMA_ALPHA) {
-  if (previousSmoothed === null || previousSmoothed === undefined) {
-    return newWeight;
-  }
-  return alpha * newWeight + (1 - alpha) * previousSmoothed;
+// ─────────────────────────────────────────────────────────────────────────────
+// EWMA weight smoothing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Exponentially weighted moving average for daily weight. */
+export function updateSmoothedWeight(rawToday, smoothedYesterday, alpha = EWMA_ALPHA) {
+  if (smoothedYesterday == null || Number.isNaN(smoothedYesterday)) return rawToday;
+  return alpha * rawToday + (1 - alpha) * smoothedYesterday;
 }
 
-/**
- * Calculate TDEE using Mifflin-St Jeor formula
- * @param {number} weightKg - Current weight in kilograms
- * @param {number} heightCm - Height in centimeters
- * @param {number} age - Age in years
- * @param {string} [sex='male'] - 'male' or 'female'
- * @param {number} [activityFactor=1.55] - Activity multiplier (1.2-1.9 typical range)
- * @returns {number} Estimated daily TDEE in calories
- * @example
- * const tdee = calculateFormulaTDEE(100, 178, 35, 'male', 1.55)
- * // Returns estimated TDEE around 2500-2600 calories
- */
-export function calculateFormulaTDEE(weightKg, heightCm, age, sex = 'male', activityFactor = 1.55) {
-  let bmr;
+/** Initialize the EWMA series from the first ≤7 raw weights using a simple mean. */
+export function seedSmoothedSeries(rawWeights) {
+  if (!rawWeights || rawWeights.length === 0) return [];
+  const sorted = [...rawWeights].sort((a, b) => (a.date < b.date ? -1 : 1));
+  const out = [];
+  const seedWindow = Math.min(7, sorted.length);
+  const seedMean = sorted.slice(0, seedWindow).reduce((s, w) => s + w.weight_lbs, 0) / seedWindow;
+  let prev = seedMean;
+  for (const w of sorted) {
+    const trended = updateSmoothedWeight(w.weight_lbs, prev);
+    out.push({ ...w, trended_lbs: round1(trended) });
+    prev = trended;
+  }
+  return out;
+}
 
-  if (sex.toLowerCase() === 'female') {
-    // Mifflin-St Jeor for females
-    bmr = 10 * weightKg + 6.25 * heightCm - 5 * age - 161;
+// ─────────────────────────────────────────────────────────────────────────────
+// Formula TDEE (Mifflin-St Jeor) — cold start before back-solve has enough data
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ACTIVITY_FACTORS = {
+  sedentary: 1.2,
+  light: 1.375,
+  moderate: 1.55,
+  very: 1.725,
+  extreme: 1.9,
+};
+
+export function formulaTDEE({ weight_lbs, height_in, age, sex = 'male', activity_level = 'moderate' }) {
+  const wKg = weight_lbs * 0.453592;
+  const hCm = height_in * 2.54;
+  const bmr =
+    sex.toLowerCase() === 'female'
+      ? 10 * wKg + 6.25 * hCm - 5 * age - 161
+      : 10 * wKg + 6.25 * hCm - 5 * age + 5;
+  const factor = ACTIVITY_FACTORS[activity_level] ?? ACTIVITY_FACTORS.moderate;
+  return Math.round(bmr * factor);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Back-solve TDEE from real history
+//   estimated_tdee = avg_daily_kcal − (Δtrended_lbs × 3500 / days)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @param weightTrend  [{date, trended_lbs}]  — sorted ascending, must span ≥REVIEW_WINDOW_DAYS
+ * @param dailyKcal    [{date, kcal}]         — daily totals
+ * @param windowDays   default 14
+ */
+export function backSolveTDEE(weightTrend, dailyKcal, windowDays = REVIEW_WINDOW_DAYS) {
+  if (!weightTrend || weightTrend.length < 2) return null;
+  if (!dailyKcal) return null;
+  const sortedTrend = [...weightTrend].sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  const endDate = sortedTrend[sortedTrend.length - 1].date;
+  const startDate = isoDaysAgo(endDate, windowDays);
+
+  const trendInWindow = sortedTrend.filter((w) => w.date >= startDate && w.date <= endDate);
+  if (trendInWindow.length < 2) return null;
+
+  const kcalInWindow = dailyKcal.filter((k) => k.date >= startDate && k.date <= endDate);
+  if (kcalInWindow.length < MIN_DAYS_FOR_TDEE) return null;
+
+  const startTrend = trendInWindow[0].trended_lbs;
+  const endTrend = trendInWindow[trendInWindow.length - 1].trended_lbs;
+  const daysElapsed = daysBetween(trendInWindow[0].date, trendInWindow[trendInWindow.length - 1].date) || 1;
+
+  const totalKcal = kcalInWindow.reduce((s, k) => s + (k.kcal || 0), 0);
+  const avgDailyKcal = totalKcal / kcalInWindow.length;
+
+  const deltaLbs = endTrend - startTrend;
+  const dailyEnergyBalance = (deltaLbs * KCAL_PER_LB) / daysElapsed; // +500 = surplus
+
+  return Math.round(avgDailyKcal - dailyEnergyBalance);
+}
+
+/** Cold-start blend between formula and data-driven estimates. */
+export function blendedTDEE(formula, dataDriven, daysOfData) {
+  if (!dataDriven) return formula;
+  if (daysOfData >= COLD_START_DAYS) return dataDriven;
+  const w = daysOfData / COLD_START_DAYS;
+  return Math.round(formula * (1 - w) + dataDriven * w);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Confidence: low | medium | high
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function confidenceScore({ daysOfData, complianceRate, weeklyVarianceLbs }) {
+  if (daysOfData < 14 || complianceRate < 0.8) return 'low';
+  if (daysOfData < 28 || complianceRate < 0.95) return 'medium';
+  if (weeklyVarianceLbs != null && weeklyVarianceLbs > 1.0) return 'medium';
+  return 'high';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Daily targets — split TDEE into training/rest with floors and macro hierarchy
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @param tdee            estimated TDEE (kcal/day average)
+ * @param goalDeficitKcal positive number; subtracted to set base
+ * @param trainingDays    days/week (default 4)
+ * @param targets         settings.targets — has floors + protein/fat per-lb
+ * @param weight_lbs      current bodyweight
+ */
+export function makeDailyTargets({ tdee, goalDeficitKcal = 0, trainingDays = 4, targets, weight_lbs }) {
+  const base = tdee - goalDeficitKcal;
+  let trainingKcal = base + TRAINING_DAY_BONUS;
+  let restKcal = base - (TRAINING_DAY_BONUS * trainingDays) / Math.max(1, 7 - trainingDays);
+
+  // Calorie floor on training days
+  trainingKcal = Math.max(trainingKcal, targets.calorie_floor);
+  restKcal = Math.max(restKcal, targets.calorie_floor - 400); // rest day floor: 400 below training
+
+  // Macro hierarchy: protein floor → fat floor → carbs absorb the rest
+  const proteinG = Math.round(weight_lbs * targets.protein_g_per_lb);
+  const fatG = Math.round(weight_lbs * targets.fat_g_per_lb);
+  const proteinKcal = proteinG * 4;
+  const fatKcal = fatG * 9;
+
+  const carbsTrainingKcal = trainingKcal - proteinKcal - fatKcal;
+  const carbsRestKcal = restKcal - proteinKcal - fatKcal;
+
+  let trainingCarbsG = Math.max(0, Math.round(carbsTrainingKcal / 4));
+  let restCarbsG = Math.max(0, Math.round(carbsRestKcal / 4));
+
+  // Carb floor warning on training days
+  const carbWarning = trainingCarbsG < targets.training_carb_floor_g;
+
+  return {
+    training: {
+      kcal: Math.round(trainingKcal),
+      protein_g: proteinG,
+      fat_g: fatG,
+      carbs_g: trainingCarbsG,
+    },
+    rest: {
+      kcal: Math.round(restKcal),
+      protein_g: proteinG,
+      fat_g: fatG,
+      carbs_g: restCarbsG,
+    },
+    weekly_avg_kcal: Math.round(
+      (trainingKcal * trainingDays + restKcal * (7 - trainingDays)) / 7
+    ),
+    carb_warning: carbWarning,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Weekly review — runs Sunday morning, returns recommended new targets + reason
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @param prev      { tdee_estimate, training_kcal, rest_kcal, phase, phase_start_date }
+ * @param window    { weightTrend, dailyKcal, days_logged, target_rate_pct, profile, targets }
+ */
+export function weeklyReview(prev, window) {
+  const { weightTrend, dailyKcal, target_rate_pct, profile, targets } = window;
+
+  const newTDEE = backSolveTDEE(weightTrend, dailyKcal, REVIEW_WINDOW_DAYS);
+  if (!newTDEE) {
+    return {
+      adjusted: false,
+      reason: 'Not enough data yet — need at least 14 days of weight + food logging.',
+      newTargets: null,
+      newTDEE: prev.tdee_estimate,
+    };
+  }
+
+  // Goal deficit derived from target rate (% bodyweight per week)
+  const weeklyKcalDeficit = profile.weight_lbs * (target_rate_pct / 100) * KCAL_PER_LB;
+  const dailyDeficit = profile.goal === 'cut' ? weeklyKcalDeficit / 7 : 0;
+
+  const recommended = makeDailyTargets({
+    tdee: newTDEE,
+    goalDeficitKcal: dailyDeficit,
+    trainingDays: profile.training_days_per_week,
+    targets,
+    weight_lbs: profile.weight_lbs,
+  });
+
+  // Cap weekly kcal change at ±200
+  const cappedTraining = clampToCap(recommended.training.kcal, prev.training_kcal, MAX_WEEKLY_KCAL_CHANGE);
+  const cappedRest = clampToCap(recommended.rest.kcal, prev.rest_kcal, MAX_WEEKLY_KCAL_CHANGE);
+
+  const trainingDelta = cappedTraining - prev.training_kcal;
+  const restDelta = cappedRest - prev.rest_kcal;
+
+  const trendChange = round1(
+    weightTrend[weightTrend.length - 1].trended_lbs - weightTrend[0].trended_lbs
+  );
+  const avgKcal = Math.round(dailyKcal.reduce((s, d) => s + (d.kcal || 0), 0) / dailyKcal.length);
+
+  const reason = composeReasoning({
+    trendChange,
+    avgKcal,
+    newTDEE,
+    priorTDEE: prev.tdee_estimate,
+    trainingDelta,
+    restDelta,
+    cap: MAX_WEEKLY_KCAL_CHANGE,
+    carb_warning: recommended.carb_warning,
+  });
+
+  return {
+    adjusted: trainingDelta !== 0 || restDelta !== 0,
+    reason,
+    trendChange,
+    avgKcal,
+    newTDEE,
+    priorTDEE: prev.tdee_estimate,
+    newTargets: {
+      ...recommended,
+      training: { ...recommended.training, kcal: cappedTraining },
+      rest: { ...recommended.rest, kcal: cappedRest },
+    },
+  };
+}
+
+function composeReasoning({ trendChange, avgKcal, newTDEE, priorTDEE, trainingDelta, restDelta, cap, carb_warning }) {
+  const dir = trendChange < 0 ? 'down' : trendChange > 0 ? 'up' : 'flat';
+  const magnitude = Math.abs(trendChange);
+  const tdeeShift = newTDEE - priorTDEE;
+  const sentences = [];
+
+  sentences.push(
+    `Trended weight is ${dir}${dir === 'flat' ? '' : ` ${magnitude.toFixed(1)} lbs`} over the last 14 days, on an average intake of ${avgKcal} kcal/day.`
+  );
+  sentences.push(
+    `That back-solves to a TDEE of ~${newTDEE} kcal (was ${priorTDEE}, shift of ${tdeeShift > 0 ? '+' : ''}${tdeeShift}).`
+  );
+  if (trainingDelta === 0 && restDelta === 0) {
+    sentences.push('No adjustment recommended — current targets line up with your goal rate.');
   } else {
-    // Mifflin-St Jeor for males
-    bmr = 10 * weightKg + 6.25 * heightCm - 5 * age + 5;
+    const trainingPart = trainingDelta === 0 ? null : `training day ${trainingDelta > 0 ? '+' : ''}${trainingDelta} kcal`;
+    const restPart = restDelta === 0 ? null : `rest day ${restDelta > 0 ? '+' : ''}${restDelta} kcal`;
+    sentences.push(`Recommended adjustment: ${[trainingPart, restPart].filter(Boolean).join(', ')}.`);
+    if (Math.abs(trainingDelta) === cap || Math.abs(restDelta) === cap) {
+      sentences.push(`(Capped at ±${cap} kcal/week to keep things stable.)`);
+    }
   }
-
-  const tdee = bmr * activityFactor;
-  return Math.round(tdee);
+  if (carb_warning) {
+    sentences.push('Heads up: at this calorie level, training-day carbs would land below 100g. Consider a diet break before continuing the cut.');
+  }
+  return sentences.join(' ');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Intra-day rebalance — David's choice: smart rebalance with floors
+// If lunch overshoots by 200, dinner's recommended portions shrink by 200,
+// but never below protein/fat/carb floors. If floors would break, no rebalance —
+// surface the overshoot honestly and roll it into the weekly review.
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Calculate adaptive TDEE from user data history
- * Back-calculates actual TDEE from weight changes and food intake
- * Returns null if insufficient data (<14 days)
- * @param {Array<{date: string, weight_lbs: number, smoothed_weight: number}>} weightEntries
- *   - Sorted by date ascending
- *   - date format: 'YYYY-MM-DD'
- * @param {Array<{date: string, calories: number}>} foodLogEntries
- *   - date format: 'YYYY-MM-DD'
- * @param {number} [days=28] - Window to analyze (defaults to 28 days)
- * @returns {number|null} Estimated TDEE in calories, or null if insufficient data
- * @example
- * const tdee = calculateAdaptiveTDEE(weightEntries, foodLogEntries, 28)
- * // Returns null if < 14 days of data
+ * @param dayBudget    { kcal, protein_g, carbs_g, fat_g }  (today's training or rest target)
+ * @param loggedSoFar  { kcal, protein_g, carbs_g, fat_g }  (sum of logged entries)
+ * @param plannedRemaining  { kcal, protein_g, carbs_g, fat_g }  (sum of planned-but-unlogged)
+ * @param floors       { protein_g_remaining, fat_g_remaining, carbs_g_remaining }
+ * @returns { mode: 'rebalanced'|'unchanged'|'floor_violation', delta: kcal, recommended: {...} | null, reason }
  */
-export function calculateAdaptiveTDEE(weightEntries, foodLogEntries, days = 28) {
-  if (!weightEntries || weightEntries.length === 0 || !foodLogEntries) {
-    return null;
+export function intradayRebalance({ dayBudget, loggedSoFar, plannedRemaining, floors }) {
+  const remaining = {
+    kcal: dayBudget.kcal - loggedSoFar.kcal,
+    protein_g: dayBudget.protein_g - loggedSoFar.protein_g,
+    carbs_g: dayBudget.carbs_g - loggedSoFar.carbs_g,
+    fat_g: dayBudget.fat_g - loggedSoFar.fat_g,
+  };
+
+  const delta = remaining.kcal - plannedRemaining.kcal;
+  if (Math.abs(delta) < 50) {
+    return { mode: 'unchanged', delta, recommended: plannedRemaining, reason: 'On track — within ±50 kcal of plan.' };
   }
 
-  // Sort weight entries by date
-  const sortedWeights = [...weightEntries].sort((a, b) =>
-    new Date(a.date) - new Date(b.date)
+  // Scale carbs down/up first to absorb delta. Protein and fat held steady.
+  // delta < 0 = overshoot; delta > 0 = undershoot
+  const recommended = { ...plannedRemaining };
+  const carbDeltaG = delta / 4;
+  recommended.carbs_g = Math.max(0, Math.round(plannedRemaining.carbs_g + carbDeltaG));
+  recommended.kcal = Math.round(
+    recommended.protein_g * 4 + recommended.fat_g * 9 + recommended.carbs_g * 4
   );
 
-  // Get date range for analysis
-  const endDate = new Date(sortedWeights[sortedWeights.length - 1].date);
-  const startDate = new Date(endDate);
-  startDate.setDate(startDate.getDate() - days);
+  // Floor check on remaining macros after rebalance
+  const wouldViolateProtein = remaining.protein_g - plannedRemaining.protein_g < 0 && plannedRemaining.protein_g < (floors?.protein_g_remaining || 0);
+  const wouldViolateFat = remaining.fat_g - plannedRemaining.fat_g < 0 && plannedRemaining.fat_g < (floors?.fat_g_remaining || 0);
+  const wouldViolateCarbs = recommended.carbs_g < (floors?.carbs_g_remaining || 0);
 
-  // Filter entries within window
-  const weightsInWindow = sortedWeights.filter(w => {
-    const wDate = new Date(w.date);
-    return wDate >= startDate && wDate <= endDate;
-  });
-
-  if (weightsInWindow.length < 2) {
-    return null;
-  }
-
-  // Get logged days in window
-  const loggedDays = foodLogEntries.filter(log => {
-    const logDate = new Date(log.date);
-    return logDate >= startDate && logDate <= endDate;
-  });
-
-  if (loggedDays.length < MIN_DAYS_FOR_TDEE) {
-    return null;
-  }
-
-  // Calculate average daily calories from logged days
-  const totalCalories = loggedDays.reduce((sum, log) => sum + (log.calories || 0), 0);
-  const avgDailyCalories = totalCalories / loggedDays.length;
-
-  // Calculate weight change (smoothed weights)
-  const startWeight = weightsInWindow[0].smoothed_weight;
-  const endWeight = weightsInWindow[weightsInWindow.length - 1].smoothed_weight;
-  const weightChange = endWeight - startWeight; // Negative = weight loss
-
-  // Calculate days elapsed
-  const daysElapsed = daysBetween(
-    new Date(weightsInWindow[0].date),
-    new Date(weightsInWindow[weightsInWindow.length - 1].date)
-  );
-
-  if (daysElapsed === 0) {
-    return null;
-  }
-
-  // Back-calculate TDEE from weight change
-  // Weight change (lbs) * 3500 kcal/lb / days = daily deficit/surplus
-  const calorieDeficit = (weightChange * KCAL_PER_LB) / daysElapsed;
-
-  // TDEE = average intake - deficit (deficit is positive for weight loss)
-  const estimatedTDEE = avgDailyCalories - calorieDeficit;
-
-  return Math.round(Math.max(estimatedTDEE, MIN_CALORIES));
-}
-
-/**
- * Blend formula-based and data-driven TDEE during cold start period
- * During first 30 days, progressively shift from formula to data-driven estimate
- * @param {number} formulaTDEE - TDEE from Mifflin-St Jeor formula
- * @param {number|null} dataDrivenTDEE - TDEE calculated from user data, or null
- * @param {number} daysOfData - Number of days of food/weight data available
- * @returns {number} Blended TDEE estimate
- * @example
- * const blended = getBlendedTDEE(2500, 2400, 10)
- * // Returns weighted average favoring formula during cold start
- */
-export function getBlendedTDEE(formulaTDEE, dataDrivenTDEE, daysOfData) {
-  // If no data-driven estimate available, use formula
-  if (!dataDrivenTDEE || daysOfData === 0) {
-    return formulaTDEE;
-  }
-
-  // If enough data accumulated, trust data-driven estimate
-  if (daysOfData >= COLD_START_DAYS) {
-    return dataDrivenTDEE;
-  }
-
-  // During cold start, blend based on data availability
-  const dataWeight = daysOfData / COLD_START_DAYS;
-  const formulaWeight = 1 - dataWeight;
-
-  return Math.round(formulaTDEE * formulaWeight + dataDrivenTDEE * dataWeight);
-}
-
-/**
- * Generate daily calorie targets for training and rest days
- * @param {number} tdee - Total Daily Energy Expenditure
- * @param {number} [trainingDaysPerWeek=4] - Number of training days per week
- * @param {number} [trainingBonus=250] - Extra calories for training days
- * @returns {{trainingTarget: number, restTarget: number, avgDailyTarget: number}}
- * @example
- * const targets = generateTargets(2400, 4, 250)
- * // {
- * //   trainingTarget: 2400,
- * //   restTarget: 2150,
- * //   avgDailyTarget: 2275  // weighted average
- * // }
- */
-export function generateTargets(tdee, trainingDaysPerWeek = 4, trainingBonus = TRAINING_DAY_BONUS) {
-  const restDaysPerWeek = 7 - trainingDaysPerWeek;
-
-  const trainingTarget = tdee + trainingBonus;
-  const restTarget = tdee - (trainingBonus * trainingDaysPerWeek) / restDaysPerWeek;
-
-  // Calculate weekly average
-  const weeklyCalories = trainingTarget * trainingDaysPerWeek + restTarget * restDaysPerWeek;
-  const avgDailyTarget = weeklyCalories / 7;
-
-  return {
-    trainingTarget: Math.round(trainingTarget),
-    restTarget: Math.round(Math.max(restTarget, MIN_CALORIES)),
-    avgDailyTarget: Math.round(avgDailyTarget),
-  };
-}
-
-/**
- * Apply safety guardrails to calorie targets
- * Ensures targets don't drop too low or increase excessively
- * @param {{trainingTarget: number, restTarget: number, avgDailyTarget: number}} targets
- * @param {number} currentWeight - Current weight in lbs
- * @param {number} currentTDEE - Current estimated TDEE
- * @returns {{trainingTarget: number, restTarget: number, avgDailyTarget: number}} Clamped targets
- */
-export function applyGuardrails(targets, currentWeight, currentTDEE) {
-  // Ensure minimum calorie intake for health and sustainability
-  const minCalories = Math.max(MIN_CALORIES, currentWeight * 10); // At least 10 cal/lb
-
-  // Cap increases/decreases at reasonable rate (max 20% change)
-  const maxIncrease = currentTDEE * 1.2;
-  const minDecreaseFloor = currentTDEE * 0.8;
-
-  return {
-    trainingTarget: Math.round(
-      Math.max(minCalories, Math.min(targets.trainingTarget, maxIncrease))
-    ),
-    restTarget: Math.round(
-      Math.max(minCalories, Math.min(targets.restTarget, maxIncrease))
-    ),
-    avgDailyTarget: Math.round(
-      Math.max(minCalories, Math.min(targets.avgDailyTarget, maxIncrease))
-    ),
-  };
-}
-
-/**
- * Perform weekly check and recommend calorie adjustments
- * Analyzes weight trend and adherence to determine if adjustment needed
- * @param {Object} algorithmState - Current algorithm state object
- *   - {tdee, lastAdjustmentDate, recentTrend, adherenceRate}
- * @param {Array<{date: string, smoothed_weight: number}>} recentWeightEntries - Last 7-14 days
- * @param {Array<{date: string, calories: number}>} recentFoodLog - Last 7 days
- * @returns {{action: string, amount: number, reason: string}}
- *   - action: 'increase', 'decrease', or 'maintain'
- *   - amount: calories to adjust by (positive or negative)
- *   - reason: explanation for the recommendation
- */
-export function weeklyCheck(algorithmState, recentWeightEntries, recentFoodLog) {
-  if (!algorithmState || recentWeightEntries.length < 3) {
+  if (wouldViolateProtein || wouldViolateFat || wouldViolateCarbs) {
     return {
-      action: 'maintain',
-      amount: 0,
-      reason: 'Insufficient data for adjustment recommendation',
-    };
-  }
-
-  // Calculate weight trend (comparing last 3 days to previous 3 days)
-  if (recentWeightEntries.length >= 6) {
-    const recent3 = recentWeightEntries.slice(-3);
-    const previous3 = recentWeightEntries.slice(-6, -3);
-
-    const recentAvg =
-      recent3.reduce((sum, w) => sum + w.smoothed_weight, 0) / recent3.length;
-    const previousAvg =
-      previous3.reduce((sum, w) => sum + w.smoothed_weight, 0) / previous3.length;
-
-    const trend = previousAvg - recentAvg; // Positive = losing weight
-    const adherenceRate =
-      recentFoodLog.length > 0
-        ? recentFoodLog.length / Math.min(7, recentWeightEntries.length)
-        : 0;
-
-    // If losing weight faster than expected (>0.75 lbs/week), increase calories
-    if (trend > 0.75 && adherenceRate > 0.7) {
-      return {
-        action: 'increase',
-        amount: ADJUSTMENT_STEP,
-        reason: 'Weight loss exceeding target rate, calories increased for sustainability',
-      };
-    }
-
-    // If not losing weight but adherent to plan, decrease calories slightly
-    if (trend < 0.25 && trend >= 0 && adherenceRate > 0.8) {
-      return {
-        action: 'decrease',
-        amount: ADJUSTMENT_STEP,
-        reason: 'Insufficient weight loss despite good adherence, calories decreased',
-      };
-    }
-
-    // If gaining weight despite deficit expectations, decrease calories
-    if (trend < 0 && adherenceRate > 0.8) {
-      return {
-        action: 'decrease',
-        amount: ADJUSTMENT_STEP * 1.5,
-        reason: 'Weight gain despite adherence, TDEE reassessment needed',
-      };
-    }
-
-    if (trend > 0 && trend <= 0.75) {
-      return {
-        action: 'maintain',
-        amount: 0,
-        reason: `Excellent progress: ${trend.toFixed(2)} lbs/week, maintaining current targets`,
-      };
-    }
-  }
-
-  return {
-    action: 'maintain',
-    amount: 0,
-    reason: 'Weight trend within optimal range',
-  };
-}
-
-/**
- * Check if diet break is needed after extended cutting phase
- * @param {string} phaseStartDate - When current phase began (YYYY-MM-DD format)
- * @param {string} phase - Current phase ('cut', 'maintenance', or 'diet_break')
- * @returns {{needed: boolean, message: string, weeksElapsed: number}}
- */
-export function checkDietBreakNeeded(phaseStartDate, phase) {
-  if (phase !== 'cut') {
-    return {
-      needed: false,
-      message: 'Diet break only needed during cut phase',
-      weeksElapsed: 0,
-    };
-  }
-
-  const startDate = new Date(phaseStartDate);
-  const today = new Date();
-  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
-  const weeksElapsed = Math.floor((today - startDate) / msPerWeek);
-
-  const DIET_BREAK_INTERVAL = 8; // 8 weeks before suggesting break
-
-  if (weeksElapsed >= DIET_BREAK_INTERVAL) {
-    return {
-      needed: true,
-      message: `${weeksElapsed} weeks in cut phase. Consider a 1-2 week diet break to reset hormones and maintain adherence.`,
-      weeksElapsed,
+      mode: 'floor_violation',
+      delta,
+      recommended: null,
+      reason:
+        delta < 0
+          ? `You're ${Math.abs(Math.round(delta))} kcal over today. Eat the planned dinner — we'll absorb this in the weekly review.`
+          : `You're ${Math.round(delta)} kcal under. Add a snack rather than oversize dinner past the floor.`,
     };
   }
 
   return {
-    needed: false,
-    message: `${weeksElapsed} weeks into cut (${DIET_BREAK_INTERVAL - weeksElapsed} weeks until break recommended)`,
-    weeksElapsed,
+    mode: 'rebalanced',
+    delta,
+    recommended,
+    reason:
+      delta < 0
+        ? `Rebalanced: ${Math.abs(Math.round(delta))} kcal over earlier — dinner carbs reduced by ${Math.abs(Math.round(carbDeltaG))} g.`
+        : `Rebalanced: ${Math.round(delta)} kcal under earlier — dinner carbs raised by ${Math.round(carbDeltaG)} g.`,
   };
 }
 
-/**
- * Compute weekly summary statistics
- * Aggregates weight and food data for the given week
- * @param {Array<{date: string, smoothed_weight: number}>} weightEntries
- * @param {Array<{date: string, calories: number, protein_g?: number}>} foodLogEntries
- * @param {Array<string>} trainingDays - Array of dates (YYYY-MM-DD) that were training days
- * @param {string} weekStartDate - Start of week (YYYY-MM-DD format)
- * @returns {{
- *   weekStart: string,
- *   weekEnd: string,
- *   startWeight: number,
- *   endWeight: number,
- *   weeklyChange: number,
- *   avgDailyCalories: number,
- *   avgDailyProtein: number,
- *   daysLogged: number,
- *   trainingDaysCount: number,
- *   adherencePercent: number
- * }}
- */
-export function computeWeeklySummary(
-  weightEntries,
-  foodLogEntries,
-  trainingDays,
-  weekStartDate
-) {
-  const weekStart = new Date(weekStartDate);
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekEnd.getDate() + 6);
+// ─────────────────────────────────────────────────────────────────────────────
+// Diet break prompt
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // Filter entries for this week
-  const weekWeights = (weightEntries || []).filter(w => {
-    const wDate = new Date(w.date);
-    return wDate >= weekStart && wDate <= weekEnd;
-  });
-
-  const weekFood = (foodLogEntries || []).filter(f => {
-    const fDate = new Date(f.date);
-    return fDate >= weekStart && fDate <= weekEnd;
-  });
-
-  const weekTrainingDays = (trainingDays || []).filter(d => {
-    const dDate = new Date(d);
-    return dDate >= weekStart && dDate <= weekEnd;
-  });
-
-  // Calculate weight change
-  let startWeight = 0;
-  let endWeight = 0;
-  if (weekWeights.length > 0) {
-    startWeight = weekWeights[0].smoothed_weight;
-    endWeight = weekWeights[weekWeights.length - 1].smoothed_weight;
-  }
-
-  // Calculate calorie and protein stats
-  const totalCalories = weekFood.reduce((sum, f) => sum + (f.calories || 0), 0);
-  const totalProtein = weekFood.reduce((sum, f) => sum + (f.protein_g || 0), 0);
-  const daysLogged = new Set(weekFood.map(f => f.date)).size;
-
-  const avgDailyCalories = daysLogged > 0 ? Math.round(totalCalories / daysLogged) : 0;
-  const avgDailyProtein = daysLogged > 0 ? Math.round(totalProtein / daysLogged) : 0;
-
+export function checkDietBreakNeeded(phase, phaseStartDate) {
+  if (phase !== PHASE.CUT) return { needed: false, weeks: 0 };
+  const weeks = Math.floor(daysBetween(phaseStartDate, isoToday()) / 7);
   return {
-    weekStart: weekStartDate,
-    weekEnd: weekEnd.toISOString().split('T')[0],
-    startWeight: Math.round(startWeight * 10) / 10,
-    endWeight: Math.round(endWeight * 10) / 10,
-    weeklyChange: Math.round((endWeight - startWeight) * 10) / 10,
-    avgDailyCalories,
-    avgDailyProtein,
-    daysLogged,
-    trainingDaysCount: weekTrainingDays.length,
-    adherencePercent: Math.round((daysLogged / 7) * 100),
+    needed: weeks >= DIET_BREAK_AFTER_WEEKS,
+    weeks,
+    message:
+      weeks >= DIET_BREAK_AFTER_WEEKS
+        ? `${weeks} weeks in cut — consider a 7–14 day diet break to restore hormones and adherence.`
+        : `${weeks} weeks into cut (${DIET_BREAK_AFTER_WEEKS - weeks} until break recommended).`,
   };
 }
 
-/**
- * Get smoothed weight at a specific date, interpolating if needed
- * @param {Array<{date: string, smoothed_weight: number}>} entries - Sorted by date
- * @param {string} date - Target date (YYYY-MM-DD)
- * @returns {number|null} Smoothed weight, or null if no nearby data
- */
-export function getSmoothedWeightAt(entries, date) {
-  if (!entries || entries.length === 0) return null;
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-  const targetDate = new Date(date);
-  const sorted = [...entries].sort((a, b) => new Date(a.date) - new Date(b.date));
-
-  // Find exact match
-  const exact = sorted.find(e => e.date === date);
-  if (exact) return exact.smoothed_weight;
-
-  // Find surrounding entries for interpolation
-  let before = null;
-  let after = null;
-
-  for (let i = 0; i < sorted.length; i++) {
-    const entryDate = new Date(sorted[i].date);
-    if (entryDate < targetDate) {
-      before = sorted[i];
-    } else if (entryDate > targetDate && !after) {
-      after = sorted[i];
-      break;
-    }
-  }
-
-  // Linear interpolation between before and after
-  if (before && after) {
-    const beforeDate = new Date(before.date);
-    const afterDate = new Date(after.date);
-    const totalMs = afterDate - beforeDate;
-    const elapsedMs = targetDate - beforeDate;
-    const ratio = elapsedMs / totalMs;
-
-    const beforeWeight = before.smoothed_weight;
-    const afterWeight = after.smoothed_weight;
-
-    return beforeWeight + (afterWeight - beforeWeight) * ratio;
-  }
-
-  // Return nearest if interpolation not possible
-  if (before) return before.smoothed_weight;
-  if (after) return after.smoothed_weight;
-
-  return null;
+function clampToCap(target, prior, cap) {
+  if (target > prior + cap) return prior + cap;
+  if (target < prior - cap) return prior - cap;
+  return Math.round(target);
 }
 
-/**
- * Sum calories across a date range
- * @param {Array<{date: string, calories: number}>} entries
- * @param {string} startDate - Start date (YYYY-MM-DD)
- * @param {string} endDate - End date inclusive (YYYY-MM-DD)
- * @returns {number} Total calories
- */
-export function sumCalories(entries, startDate, endDate) {
-  if (!entries) return 0;
-
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  end.setDate(end.getDate() + 1); // Make inclusive
-
-  return entries
-    .filter(e => {
-      const eDate = new Date(e.date);
-      return eDate >= start && eDate < end;
-    })
-    .reduce((sum, e) => sum + (e.calories || 0), 0);
+function isoToday() {
+  return new Date().toISOString().slice(0, 10);
 }
 
-/**
- * Count number of logged days in date range
- * @param {Array<{date: string}>} entries
- * @param {string} startDate - Start date (YYYY-MM-DD)
- * @param {string} endDate - End date (YYYY-MM-DD)
- * @returns {number} Number of unique dates with entries
- */
-export function countLoggedDays(entries, startDate, endDate) {
-  if (!entries) return 0;
-
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  end.setDate(end.getDate() + 1); // Make inclusive
-
-  const uniqueDates = new Set();
-
-  entries.forEach(e => {
-    const eDate = new Date(e.date);
-    if (eDate >= start && eDate < end) {
-      uniqueDates.add(e.date);
-    }
-  });
-
-  return uniqueDates.size;
+function isoDaysAgo(isoDate, days) {
+  const d = new Date(isoDate + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
 }
 
-/**
- * Calculate number of days between two dates
- * @param {Date|string} date1 - First date
- * @param {Date|string} date2 - Second date
- * @returns {number} Number of days difference
- */
-export function daysBetween(date1, date2) {
-  const d1 = typeof date1 === 'string' ? new Date(date1) : new Date(date1);
-  const d2 = typeof date2 === 'string' ? new Date(date2) : new Date(date2);
+function daysBetween(isoA, isoB) {
+  const a = new Date(isoA + 'T00:00:00Z');
+  const b = new Date(isoB + 'T00:00:00Z');
+  return Math.round(Math.abs(b - a) / 86400000);
+}
 
-  const msPerDay = 24 * 60 * 60 * 1000;
-  const diffMs = Math.abs(d2 - d1);
-
-  return Math.round(diffMs / msPerDay);
+function round1(n) {
+  return Math.round(n * 10) / 10;
 }
