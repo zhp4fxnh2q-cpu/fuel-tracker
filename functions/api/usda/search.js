@@ -26,8 +26,8 @@ const NUTRIENT_IDS = {
 };
 
 const DATATYPE_RANK = {
-  Foundation: 0,
-  'SR Legacy': 1,
+  'SR Legacy': 0,
+  Foundation: 1,
   'Survey (FNDDS)': 2,
   Branded: 3,
 };
