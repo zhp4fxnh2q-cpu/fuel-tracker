@@ -1,10 +1,19 @@
 /**
  * GET /api/usda/search?q=<query>
  *
- * Proxies USDA FoodData Central search through a Cloudflare Pages Function so
- * the API key never reaches the browser. Returns a normalized list of hits.
+ * Proxies USDA FoodData Central search. The API key never reaches the browser.
+ * USDA's relevance ranking is decent but it mixes Branded junk in with the
+ * generic foods you actually want. We re-sort by quality bucket:
  *
- * Required env: USDA_API_KEY (set in Cloudflare Pages → Settings → Environment variables).
+ *   1. Foundation         (modern lab-analyzed foods)
+ *   2. SR Legacy          (the classic SR28 reference)
+ *   3. Survey (FNDDS)     (NHANES food code mappings)
+ *   4. Branded            (commercial products)
+ *
+ * Within each bucket we keep USDA's relevance order. Hits with zero kcal AND
+ * zero protein are filtered out (lab metadata, water, etc.).
+ *
+ * Required env: USDA_API_KEY (Cloudflare Pages → Settings → Variables and Secrets).
  */
 
 const NUTRIENT_IDS = {
@@ -16,8 +25,14 @@ const NUTRIENT_IDS = {
   1093: 'sodium_mg',
 };
 
+const DATATYPE_RANK = {
+  Foundation: 0,
+  'SR Legacy': 1,
+  'Survey (FNDDS)': 2,
+  Branded: 3,
+};
+
 function pickNutrientsFromSearchHit(hit) {
-  // Search results include foodNutrients per 100g
   const out = { kcal: 0, protein_g: 0, fat_g: 0, carbs_g: 0, fiber_g: 0, sodium_mg: 0 };
   for (const n of hit.foodNutrients || []) {
     const id = n.nutrientId ?? n.nutrient?.id;
@@ -30,39 +45,52 @@ function pickNutrientsFromSearchHit(hit) {
 export async function onRequestGet({ request, env }) {
   const url = new URL(request.url);
   const q = (url.searchParams.get('q') || '').trim();
-  if (!q) {
-    return json({ error: 'missing q' }, 400);
-  }
-  if (!env.USDA_API_KEY) {
-    return json({ error: 'USDA_API_KEY not configured' }, 500);
-  }
+  if (!q) return json({ error: 'missing q' }, 400);
+  if (!env.USDA_API_KEY) return json({ error: 'USDA_API_KEY not configured' }, 500);
 
   const usdaUrl = new URL('https://api.nal.usda.gov/fdc/v1/foods/search');
   usdaUrl.searchParams.set('api_key', env.USDA_API_KEY);
   usdaUrl.searchParams.set('query', q);
-  // Spec preference order: Foundation > SR Legacy > Survey (FNDDS) > Branded
-  usdaUrl.searchParams.set('dataType', 'Foundation,SR Legacy,Survey (FNDDS),Branded');
-  usdaUrl.searchParams.set('pageSize', '20');
-  usdaUrl.searchParams.set('sortBy', 'dataType.keyword');
+  // No dataType filter, no sortBy — let USDA's relevance ranking work, then
+  // we re-bucket below.
+  usdaUrl.searchParams.set('pageSize', '40');
 
   let data;
   try {
     const r = await fetch(usdaUrl.toString());
-    if (!r.ok) {
-      return json({ error: `USDA returned ${r.status}` }, 502);
-    }
+    if (!r.ok) return json({ error: `USDA returned ${r.status}` }, 502);
     data = await r.json();
   } catch (e) {
     return json({ error: 'USDA fetch failed', detail: String(e) }, 502);
   }
 
-  const results = (data.foods || []).map((f) => ({
-    fdcId: f.fdcId,
-    name: f.description,
-    brand: f.brandOwner || f.brandName || null,
-    dataType: f.dataType,
-    per100g: pickNutrientsFromSearchHit(f),
-  }));
+  const normalized = (data.foods || [])
+    .map((f) => ({
+      fdcId: f.fdcId,
+      name: f.description,
+      brand: f.brandOwner || f.brandName || null,
+      dataType: f.dataType,
+      per100g: pickNutrientsFromSearchHit(f),
+      _relevanceIdx: 0, // populated below
+    }))
+    .filter((r) => {
+      // Drop garbage entries — must have either calories or protein
+      const p = r.per100g;
+      return (p.kcal || 0) > 0 || (p.protein_g || 0) > 0;
+    });
+
+  // Preserve relevance ordering inside each bucket
+  normalized.forEach((r, i) => { r._relevanceIdx = i; });
+
+  normalized.sort((a, b) => {
+    const ra = DATATYPE_RANK[a.dataType] ?? 99;
+    const rb = DATATYPE_RANK[b.dataType] ?? 99;
+    if (ra !== rb) return ra - rb;
+    return a._relevanceIdx - b._relevanceIdx;
+  });
+
+  // Cap at 20 after re-sort and strip the internal field
+  const results = normalized.slice(0, 20).map(({ _relevanceIdx, ...rest }) => rest);
 
   return json({ q, results });
 }
@@ -72,7 +100,7 @@ function json(body, status = 200) {
     status,
     headers: {
       'content-type': 'application/json',
-      'cache-control': 'public, max-age=60', // small caching, USDA is stable
+      'cache-control': 'public, max-age=60',
     },
   });
 }
