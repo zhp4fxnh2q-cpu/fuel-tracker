@@ -61,7 +61,7 @@ export async function onRequestGet({ request, env }) {
   usdaUrl.searchParams.set('query', q);
   // No dataType filter, no sortBy — let USDA's relevance ranking work, then
   // we re-bucket below.
-  usdaUrl.searchParams.set('pageSize', '40');
+  usdaUrl.searchParams.set('pageSize', '80');
 
   let data;
   try {
@@ -90,10 +90,22 @@ export async function onRequestGet({ request, env }) {
   // Preserve relevance ordering inside each bucket
   normalized.forEach((r, i) => { r._relevanceIdx = i; });
 
+  // "egg" should rank "Egg, whole, raw, fresh" above "Bagels, egg" — name
+  // starts with the query is a much stronger match than a comma-trailing modifier.
+  const qLower = q.toLowerCase();
+  const firstWord = qLower.split(/\s+/)[0];
+  const startsWithQuery = (name) => {
+    const n = (name || '').toLowerCase().trimStart();
+    return n.startsWith(qLower) || n.startsWith(firstWord);
+  };
+
   normalized.sort((a, b) => {
     const ra = DATATYPE_RANK[a.dataType] ?? 99;
     const rb = DATATYPE_RANK[b.dataType] ?? 99;
     if (ra !== rb) return ra - rb;
+    const sa = startsWithQuery(a.name) ? 0 : 1;
+    const sb = startsWithQuery(b.name) ? 0 : 1;
+    if (sa !== sb) return sa - sb;
     return a._relevanceIdx - b._relevanceIdx;
   });
 
