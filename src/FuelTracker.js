@@ -12,6 +12,10 @@ import CalorieRing from './components/CalorieRing';
 import WeightChart from './components/WeightChart';
 import { getWeightEntries, addOrUpdateWeight, computeStats, recomputeTrend } from './lib/weight';
 import { saveMeal as saveMealApi } from './lib/savedMeals';
+import WeeklyReviewModal from './components/WeeklyReviewModal';
+import EnergyBalanceChart from './components/EnergyBalanceChart';
+import { isReviewDue, getRecentReviews } from './lib/review';
+import { checkDietBreakNeeded } from './lib/algorithm';
 import AddFoodSheet from './components/AddFoodSheet';
 
 export default function FuelTracker({ session, onSignOut }) {
@@ -23,6 +27,7 @@ export default function FuelTracker({ session, onSignOut }) {
 
   const [addOpen, setAddOpen] = useState(false);
   const [addSlot, setAddSlot] = useState('Breakfast');
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const refreshDay = useCallback(async () => {
     const r = await getDayEntries(todayIso());
@@ -41,7 +46,10 @@ export default function FuelTracker({ session, onSignOut }) {
         setLoading(false);
         return;
       }
-      if (s.ok) setSettings(s.settings);
+      if (s.ok) {
+        setSettings(s.settings);
+        if (isReviewDue(s.settings)) setReviewOpen(true);
+      }
       const d = await getDayEntries(todayIso());
       if (cancelled) return;
       if (d.ok) setEntries(d.entries);
@@ -88,7 +96,7 @@ export default function FuelTracker({ session, onSignOut }) {
         )}
         {activeTab === 'log' && <LogScreen onAddFood={onAddFood} settings={settings} />}
         {activeTab === 'weight' && <WeightScreen settings={settings} />}
-        {activeTab === 'trends' && <TrendsScreen />}
+        {activeTab === 'trends' && <TrendsScreen settings={settings} onOpenReview={() => setReviewOpen(true)} />}
         {activeTab === 'settings' && (
           <SettingsScreen
             onSignOut={onSignOut}
@@ -105,6 +113,12 @@ export default function FuelTracker({ session, onSignOut }) {
         onClose={() => setAddOpen(false)}
         onLogged={onLogged}
         settings={settings}
+      />
+      <WeeklyReviewModal
+        open={reviewOpen}
+        settings={settings}
+        onClose={() => setReviewOpen(false)}
+        onCommitted={(s) => { setSettings(s); setReviewOpen(false); }}
       />
     </div>
   );
@@ -422,8 +436,95 @@ function Stat({ label, value }) {
     </div>
   );
 }
-function TrendsScreen() {
-  return <Placeholder title="Trends" body="Phase 7: energy-balance chart, weekly averages table, algorithm status, AI weekly summary." />;
+function TrendsScreen({ settings, onOpenReview }) {
+  const [days, setDays] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const algo = settings?.algo_state || {};
+  const phase = algo.phase || 'cutting';
+  const tdee = algo.tdee_estimate || 0;
+  const dietBreak = checkDietBreakNeeded(phase, algo.phase_start_date);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // Pull last 30 days of daily kcal totals
+      const today = new Date();
+      const out = [];
+      for (let i = 29; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        const iso = d.toISOString().slice(0, 10);
+        const r = await getDayEntries(iso);
+        const kcal = r.ok ? r.entries.reduce((s, e) => s + (e.kcal || 0), 0) : 0;
+        out.push({ date: iso, kcal });
+      }
+      if (cancelled) return;
+      setDays(out);
+      const rr = await getRecentReviews(8);
+      if (!cancelled && rr.ok) setReviews(rr.reviews);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) return <div className="empty">Loading\u2026</div>;
+
+  const totalLogged = days.filter((d) => d.kcal > 0).length;
+  const avgKcal = totalLogged > 0 ? Math.round(days.reduce((s, d) => s + d.kcal, 0) / totalLogged) : 0;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="fuel-page-title">Trends</div>
+
+      <div className="fuel-card">
+        <div className="fuel-label">Algorithm status</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 10, marginTop: 10 }}>
+          <Stat label="TDEE estimate" value={tdee ? `${tdee.toLocaleString()} kcal` : '\u2014'} />
+          <Stat label="Phase" value={phase.replace('_', ' ')} />
+          <Stat label="Days in phase" value={dietBreak.weeks ? `${dietBreak.weeks * 7} d (${dietBreak.weeks} wk)` : '\u2014'} />
+          <Stat label="Last review" value={algo.last_review_date || 'never'} />
+        </div>
+        <button onClick={onOpenReview} className="fuel-btn fuel-btn-primary" style={{ marginTop: 14, padding: '10px 14px', fontSize: 13 }}>
+          Run weekly review now
+        </button>
+      </div>
+
+      {dietBreak.needed && (
+        <div className="fuel-card" style={{ borderColor: 'rgba(245,158,11,0.32)', background: 'var(--warn-fill)' }}>
+          <div className="fuel-label" style={{ color: 'var(--warn)' }}>Diet break recommended</div>
+          <div style={{ marginTop: 8, fontSize: 14, lineHeight: 1.5 }}>{dietBreak.message}</div>
+        </div>
+      )}
+
+      <div className="fuel-card">
+        <div className="fuel-label">Energy balance \u2014 last 30 days</div>
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)' }}>
+          {totalLogged} days logged \u00b7 avg {avgKcal.toLocaleString()} kcal on logged days
+        </div>
+      </div>
+      <EnergyBalanceChart days={days} tdee={tdee} />
+
+      {reviews.length > 0 && (
+        <div className="fuel-card">
+          <div className="fuel-label" style={{ marginBottom: 8 }}>Recent reviews</div>
+          {reviews.map((r) => (
+            <div key={r.id} style={{ borderTop: '1px solid rgba(255,255,255,0.04)', padding: '10px 0', fontSize: 13, lineHeight: 1.45 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                {new Date(r.review_date + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+              </div>
+              <div style={{ marginTop: 4, color: 'var(--text-secondary)' }}>{r.reasoning}</div>
+              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-tertiary)' }}>
+                TDEE {Math.round(r.prior_tdee || 0)} \u2192 {Math.round(r.estimated_tdee || 0)} \u00b7
+                training {Math.round(r.prior_training_kcal || 0)} \u2192 {Math.round(r.new_training_kcal || 0)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 function Placeholder({ title, body }) {
   return (
