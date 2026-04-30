@@ -12,6 +12,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { searchUsda, getUsdaFood, macrosAtGrams, detailFromSearchHit, lookupBarcode } from '../lib/usda';
 import { getRecentFoods, per100gFromEntry, entryGrams } from '../lib/foodLog';
 import BarcodeScanner from './BarcodeScanner';
+import { getSavedMeals, logSavedMeal, deleteSavedMeal } from '../lib/savedMeals';
 import { addEntry, todayIso } from '../lib/foodLog';
 import { SOURCE } from '../lib/constants';
 
@@ -19,8 +20,8 @@ const DEBOUNCE_MS = 300;
 const TABS = [
   { id: 'recent', label: 'Recent', enabled: true },
   { id: 'favorites', label: 'Favorites', enabled: true },
+  { id: 'saved', label: 'Saved', enabled: true },
   { id: 'usda', label: 'USDA', enabled: true },
-  { id: 'saved', label: 'Saved meals', enabled: false },
   { id: 'meal_planner', label: 'Meal planner', enabled: false },
 ];
 
@@ -29,6 +30,8 @@ export default function AddFoodSheet({ open, mealSlot, onClose, onLogged, settin
   const [scannerOpen, setScannerOpen] = useState(false);
   const [recents, setRecents] = useState([]);
   const [recentsLoading, setRecentsLoading] = useState(false);
+  const [savedMeals, setSavedMeals] = useState([]);
+  const [savedLoading, setSavedLoading] = useState(false);
   const [step, setStep] = useState('search'); // 'search' | 'quantity'
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -68,6 +71,20 @@ export default function AddFoodSheet({ open, mealSlot, onClose, onLogged, settin
       if (cancelled) return;
       setRecents(r.recents || []);
       setRecentsLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [open, tab]);
+
+  // Load saved meals
+  useEffect(() => {
+    if (!open || tab !== 'saved') return;
+    let cancelled = false;
+    setSavedLoading(true);
+    (async () => {
+      const r = await getSavedMeals();
+      if (cancelled) return;
+      setSavedMeals(r.meals || []);
+      setSavedLoading(false);
     })();
     return () => { cancelled = true; };
   }, [open, tab]);
@@ -258,6 +275,28 @@ export default function AddFoodSheet({ open, mealSlot, onClose, onLogged, settin
                 favorites={settings?.preferences?.favorites || []}
                 onPick={onPickRecent}
                 onSwitchToUsda={() => setTab('usda')}
+              />
+            )}
+
+            {tab === 'saved' && (
+              <SavedMealsList
+                meals={savedMeals}
+                loading={savedLoading}
+                mealSlot={mealSlot}
+                onLog={async (id) => {
+                  const r = await logSavedMeal(id, mealSlot);
+                  if (r.ok) {
+                    onLogged?.();
+                    onClose();
+                  } else {
+                    setError(r.error?.message || 'Log failed');
+                  }
+                }}
+                onDelete={async (id) => {
+                  if (!window.confirm('Delete this saved meal?')) return;
+                  await deleteSavedMeal(id);
+                  setSavedMeals(savedMeals.filter((m) => m.id !== id));
+                }}
               />
             )}
           </>
@@ -531,6 +570,40 @@ const scanBtnStyle = {
   cursor: 'pointer',
   flexShrink: 0,
 };
+
+function SavedMealsList({ meals, loading, mealSlot, onLog, onDelete }) {
+  return (
+    <div style={listScrollStyle}>
+      {loading && <div style={hintStyle}>Loading\u2026</div>}
+      {!loading && meals.length === 0 && (
+        <div style={hintStyle}>
+          No saved meals yet. After you log a meal slot, tap "SAVE" on its header to snapshot it for one-tap reuse.
+        </div>
+      )}
+      {meals.map((m) => (
+        <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+          <button onClick={() => onLog(m.id)} style={{ ...hitStyle, flex: 1, padding: 0, borderBottom: 'none' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={hitNameStyle}>{m.name}</div>
+              <div style={hitMetaStyle}>
+                <span>{(m.ingredients || []).length} item{(m.ingredients||[]).length === 1 ? '' : 's'}</span>
+                <span> \u00b7 {Math.round(m.total_kcal)} kcal</span>
+                <span> \u00b7 {Math.round(m.total_protein_g)}g P</span>
+                {m.last_used_at && <span> \u00b7 last used {new Date(m.last_used_at).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</span>}
+              </div>
+            </div>
+            <span style={{ color: 'var(--accent-bright)', fontSize: 11, letterSpacing: '0.06em' }}>LOG \u2192 {mealSlot.toUpperCase()}</span>
+          </button>
+          <button
+            onClick={() => onDelete(m.id)}
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
+            title="Delete"
+          >\u00d7</button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function RecentList({ recents, loading, tab, favorites, onPick, onSwitchToUsda }) {
   const filtered = tab === 'favorites'

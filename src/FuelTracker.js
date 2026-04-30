@@ -9,6 +9,9 @@ import { TABS, DEFAULT_PROFILE, DEFAULT_TARGETS, DEFAULT_PREFERENCES } from './l
 import { fetchSettings, saveSettings, toggleFavorite, isFavorited } from './lib/db';
 import { getDayEntries, deleteEntry, sumDay, groupBySlot, todayIso } from './lib/foodLog';
 import CalorieRing from './components/CalorieRing';
+import WeightChart from './components/WeightChart';
+import { getWeightEntries, addOrUpdateWeight, computeStats, recomputeTrend } from './lib/weight';
+import { saveMeal as saveMealApi } from './lib/savedMeals';
 import AddFoodSheet from './components/AddFoodSheet';
 
 export default function FuelTracker({ session, onSignOut }) {
@@ -84,7 +87,7 @@ export default function FuelTracker({ session, onSignOut }) {
           />
         )}
         {activeTab === 'log' && <LogScreen onAddFood={onAddFood} settings={settings} />}
-        {activeTab === 'weight' && <WeightScreen />}
+        {activeTab === 'weight' && <WeightScreen settings={settings} />}
         {activeTab === 'trends' && <TrendsScreen />}
         {activeTab === 'settings' && (
           <SettingsScreen
@@ -232,13 +235,28 @@ function MealSection({ slot, items, onAdd, onDelete, settings, onToggleFavorite 
           <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.04em' }}>{slot}</div>
           {items.length > 0 && (
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-              {items.length} item{items.length === 1 ? '' : 's'} · {Math.round(slotKcal)} kcal
+              {items.length} item{items.length === 1 ? '' : 's'} \u00b7 {Math.round(slotKcal)} kcal
             </div>
           )}
         </div>
-        <button onClick={onAdd} className="fuel-btn fuel-btn-primary" style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600 }}>
-          + Add food
-        </button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {items.length > 0 && (
+            <button
+              onClick={async () => {
+                const name = window.prompt(`Save these ${items.length} item${items.length === 1 ? '' : 's'} as a saved meal?\n\nName:`, slot === 'Breakfast' ? 'My usual breakfast' : `${slot} \u2014 ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
+                if (!name || !name.trim()) return;
+                const r = await saveMealApi({ name: name.trim(), entries: items });
+                if (!r.ok) alert('Save failed: ' + (r.error?.message || 'unknown'));
+              }}
+              className="fuel-btn fuel-btn-ghost"
+              style={{ padding: '6px 10px', fontSize: 11, letterSpacing: '0.06em' }}
+              title="Save as meal"
+            >SAVE</button>
+          )}
+          <button onClick={onAdd} className="fuel-btn fuel-btn-primary" style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600 }}>
+            + Add food
+          </button>
+        </div>
       </div>
       {items.map((e) => {
         const sig = { source: e.source, source_id: e.source_id, food_name: e.food_name };
@@ -294,8 +312,115 @@ function LogScreen({ onAddFood, settings }) {
   );
 }
 
-function WeightScreen() {
-  return <Placeholder title="Weight" body="Phase 5: daily weight input, EWMA trend line, 90-day chart, back-solve TDEE preview." />;
+function WeightScreen({ settings }) {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState('');
+  const [draftDate, setDraftDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const goalWeight = null; // future: settings.profile.goal_weight_lbs
+
+  const refresh = async () => {
+    const r = await getWeightEntries(90);
+    if (r.ok) {
+      setEntries(recomputeTrend(r.entries));
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { refresh(); }, []);
+
+  const onLog = async () => {
+    const w = Number(draft);
+    if (!Number.isFinite(w) || w < 50 || w > 600) {
+      setError('Enter a weight between 50 and 600 lbs.');
+      return;
+    }
+    setError(null);
+    setSaving(true);
+    const r = await addOrUpdateWeight({ date: draftDate, weight_lbs: w });
+    setSaving(false);
+    if (r.ok) {
+      setDraft('');
+      refresh();
+    } else {
+      setError(r.error?.message || 'Save failed');
+    }
+  };
+
+  const stats = computeStats(entries);
+  const today = new Date().toISOString().slice(0, 10);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="fuel-page-title">Weight</div>
+
+      <div className="fuel-card">
+        <div className="fuel-label" style={{ marginBottom: 8 }}>Log weight</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="number" inputMode="decimal" step="0.1" min="50" max="600"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={stats ? String(stats.raw_today) : 'lbs'}
+            style={{ ...fieldStyle, flex: 1, fontSize: 16, padding: '12px 14px' }}
+          />
+          <input
+            type="date"
+            value={draftDate}
+            max={today}
+            onChange={(e) => setDraftDate(e.target.value)}
+            style={{ ...fieldStyle, padding: '12px 10px' }}
+          />
+          <button
+            onClick={onLog}
+            disabled={saving || !draft}
+            className="fuel-btn fuel-btn-primary"
+            style={{ padding: '12px 16px', fontWeight: 600, fontSize: 13 }}
+          >
+            {saving ? '\u2026' : 'Log'}
+          </button>
+        </div>
+        {error && <div className="auth-error" style={{ marginTop: 10 }}>{error}</div>}
+      </div>
+
+      {stats && (
+        <div className="fuel-card">
+          <div className="fuel-label">Trend</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 4 }}>
+            <div className="fuel-stat" style={{ fontSize: 36 }}>{stats.trended_today.toFixed(1)}</div>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+              lbs (raw {stats.raw_today.toFixed(1)})
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 14 }}>
+            <Stat label="Last 7 days" value={stats.week_change == null ? '\u2014' : `${stats.week_change > 0 ? '+' : ''}${stats.week_change.toFixed(1)} lbs`} />
+            <Stat label="Rate" value={stats.rate_lbs_per_week == null ? '\u2014' : `${stats.rate_lbs_per_week > 0 ? '+' : ''}${stats.rate_lbs_per_week.toFixed(2)} lb/wk`} />
+            <Stat label="Since start" value={`${stats.total_change > 0 ? '+' : ''}${stats.total_change.toFixed(1)} lbs`} />
+          </div>
+        </div>
+      )}
+
+      {!loading && entries.length > 0 && <WeightChart entries={entries} goalWeight={goalWeight} />}
+      {!loading && entries.length === 0 && (
+        <div className="empty">
+          <div className="empty-title">No weight history yet.</div>
+          Log a weight above. After 14 days the algorithm starts back-solving your TDEE.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{value}</div>
+    </div>
+  );
 }
 function TrendsScreen() {
   return <Placeholder title="Trends" body="Phase 7: energy-balance chart, weekly averages table, algorithm status, AI weekly summary." />;
