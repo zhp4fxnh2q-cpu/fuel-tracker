@@ -9,21 +9,26 @@
  *   3) "Log" → insert into fuel_food_log → onLogged(entry) → parent refreshes
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { searchUsda, getUsdaFood, macrosAtGrams, detailFromSearchHit } from '../lib/usda';
+import { searchUsda, getUsdaFood, macrosAtGrams, detailFromSearchHit, lookupBarcode } from '../lib/usda';
+import { getRecentFoods, per100gFromEntry, entryGrams } from '../lib/foodLog';
+import BarcodeScanner from './BarcodeScanner';
 import { addEntry, todayIso } from '../lib/foodLog';
 import { SOURCE } from '../lib/constants';
 
 const DEBOUNCE_MS = 300;
 const TABS = [
+  { id: 'recent', label: 'Recent', enabled: true },
+  { id: 'favorites', label: 'Favorites', enabled: true },
   { id: 'usda', label: 'USDA', enabled: true },
-  { id: 'recent', label: 'Recent', enabled: false },
-  { id: 'favorites', label: 'Favorites', enabled: false },
   { id: 'saved', label: 'Saved meals', enabled: false },
   { id: 'meal_planner', label: 'Meal planner', enabled: false },
 ];
 
-export default function AddFoodSheet({ open, mealSlot, onClose, onLogged }) {
-  const [tab, setTab] = useState('usda');
+export default function AddFoodSheet({ open, mealSlot, onClose, onLogged, settings }) {
+  const [tab, setTab] = useState('recent');
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [recents, setRecents] = useState([]);
+  const [recentsLoading, setRecentsLoading] = useState(false);
   const [step, setStep] = useState('search'); // 'search' | 'quantity'
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -52,7 +57,22 @@ export default function AddFoodSheet({ open, mealSlot, onClose, onLogged }) {
     }
   }, [open]);
 
-  // Debounced search
+  // Load recents when the tab is shown
+  useEffect(() => {
+    if (!open) return;
+    if (tab !== 'recent' && tab !== 'favorites') return;
+    let cancelled = false;
+    setRecentsLoading(true);
+    (async () => {
+      const r = await getRecentFoods(60);
+      if (cancelled) return;
+      setRecents(r.recents || []);
+      setRecentsLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [open, tab]);
+
+  // Debounced USDA search
   useEffect(() => {
     if (!open || tab !== 'usda') return;
     if (query.trim().length < 2) {
@@ -101,7 +121,31 @@ export default function AddFoodSheet({ open, mealSlot, onClose, onLogged }) {
     }
   };
 
-  const portion = foodDetail?.portions?.[portionIdx];
+  const onPickRecent = (entry) => {
+    // Build a synthetic detail from the recent entry — gives us per-100g + plain gram portions.
+    const per100g = per100gFromEntry(entry);
+    const grams = entryGrams(entry);
+    const detail = {
+      fdcId: entry.source_id || `recent:${entry.id}`,
+      name: entry.food_name,
+      brand: null,
+      dataType: entry.source === 'usda' ? 'SR Legacy' : 'Branded',
+      per100g: per100g || { kcal: entry.kcal, protein_g: entry.protein_g, carbs_g: entry.carbs_g, fat_g: entry.fat_g, fiber_g: entry.fiber_g || 0, sodium_mg: entry.sodium_mg || 0 },
+      portions: [
+        { label: entry.serving_unit, grams: grams || 100 },
+        { label: '100 g', grams: 100 },
+        { label: '1 oz (28 g)', grams: 28.3495 },
+        { label: '1 g', grams: 1 },
+      ],
+      _fromRecent: true,
+    };
+    setFoodDetail(detail);
+    setPortionIdx(0);
+    setAmount(entry.serving_qty || 1);
+    setStep('quantity');
+  };
+
+    const portion = foodDetail?.portions?.[portionIdx];
   const grams = portion ? portion.grams * amount : 0;
   const macros = foodDetail && portion ? macrosAtGrams(foodDetail.per100g, grams) : null;
 
@@ -161,39 +205,61 @@ export default function AddFoodSheet({ open, mealSlot, onClose, onLogged }) {
               ))}
             </div>
 
-            <div style={{ padding: '0 16px 12px' }}>
-              <input
-                ref={inputRef}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search USDA — eggs, chicken breast, oatmeal…"
-                style={searchInputStyle}
-              />
-            </div>
+            {tab === 'usda' && (
+              <>
+                <div style={{ display: 'flex', gap: 8, padding: '0 16px 12px' }}>
+                  <input
+                    ref={inputRef}
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search USDA \u2014 eggs, chicken breast, oatmeal\u2026"
+                    style={{ ...searchInputStyle, flex: 1 }}
+                  />
+                  <button
+                    onClick={() => setScannerOpen(true)}
+                    title="Scan barcode"
+                    style={scanBtnStyle}
+                  >
+                    \ud83d\udcf7
+                  </button>
+                </div>
 
-            <div style={listScrollStyle}>
-              {error && <div style={errorBoxStyle}>{error}</div>}
-              {searching && <div style={hintStyle}>Searching…</div>}
-              {!searching && query.trim().length >= 2 && results.length === 0 && !error && (
-                <div style={hintStyle}>No matches. Try a different term.</div>
-              )}
-              {!searching && query.trim().length < 2 && (
-                <div style={hintStyle}>Type at least 2 characters to search USDA's food database.</div>
-              )}
-              {results.map((hit) => (
-                <button key={hit.fdcId} onClick={() => onPick(hit)} style={hitStyle}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={hitNameStyle}>{hit.name}</div>
-                    <div style={hitMetaStyle}>
-                      <span style={dataTypeBadge(hit.dataType)}>{hit.dataType}</span>
-                      {hit.brand && <span> · {hit.brand}</span>}
-                      <span> · {Math.round(hit.per100g.kcal || 0)} kcal · {Math.round(hit.per100g.protein_g || 0)}g P / 100g</span>
-                    </div>
-                  </div>
-                  <span style={{ color: 'var(--text-tertiary)', fontSize: 18 }}>›</span>
-                </button>
-              ))}
-            </div>
+                <div style={listScrollStyle}>
+                  {error && <div style={errorBoxStyle}>{error}</div>}
+                  {searching && <div style={hintStyle}>Searching\u2026</div>}
+                  {!searching && query.trim().length >= 2 && results.length === 0 && !error && (
+                    <div style={hintStyle}>No matches. Try a different term.</div>
+                  )}
+                  {!searching && query.trim().length < 2 && (
+                    <div style={hintStyle}>Type at least 2 characters to search USDA, or tap the camera icon to scan a barcode.</div>
+                  )}
+                  {results.map((hit) => (
+                    <button key={hit.fdcId} onClick={() => onPick(hit)} style={hitStyle}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={hitNameStyle}>{hit.name}</div>
+                        <div style={hitMetaStyle}>
+                          <span style={dataTypeBadge(hit.dataType)}>{hit.dataType}</span>
+                          {hit.brand && <span> \u00b7 {hit.brand}</span>}
+                          <span> \u00b7 {Math.round(hit.per100g.kcal || 0)} kcal \u00b7 {Math.round(hit.per100g.protein_g || 0)}g P / 100g</span>
+                        </div>
+                      </div>
+                      <span style={{ color: 'var(--text-tertiary)', fontSize: 18 }}>\u203a</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {(tab === 'recent' || tab === 'favorites') && (
+              <RecentList
+                recents={recents}
+                loading={recentsLoading}
+                tab={tab}
+                favorites={settings?.preferences?.favorites || []}
+                onPick={onPickRecent}
+                onSwitchToUsda={() => setTab('usda')}
+              />
+            )}
           </>
         )}
 
@@ -213,6 +279,27 @@ export default function AddFoodSheet({ open, mealSlot, onClose, onLogged }) {
           />
         )}
       </div>
+    {scannerOpen && (
+      <BarcodeScanner
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onDetected={async (code) => {
+          setScannerOpen(false);
+          setStep('quantity');
+          setFoodDetail({ loading: true, name: `Barcode ${code}`, fdcId: code });
+          try {
+            const detail = await lookupBarcode(code);
+            setFoodDetail(detail);
+            setPortionIdx(0); // brand serving is first if available, else 100g
+            setAmount(1);
+          } catch (err) {
+            setError(err.status === 404 ? `Barcode ${code} not found in USDA or Open Food Facts. Try searching by name.` : err.message);
+            setFoodDetail(null);
+            setStep('search');
+          }
+        }}
+      />
+    )}
     </div>
   );
 }
@@ -433,6 +520,49 @@ const selectStyle = {
   width: '100%',
   outline: 'none',
 };
+
+const scanBtnStyle = {
+  background: 'var(--bg-elev-2)',
+  border: '1px solid var(--card-border)',
+  color: 'var(--accent-bright)',
+  width: 48, height: 48,
+  borderRadius: 12,
+  fontSize: 22,
+  cursor: 'pointer',
+  flexShrink: 0,
+};
+
+function RecentList({ recents, loading, tab, favorites, onPick, onSwitchToUsda }) {
+  const filtered = tab === 'favorites'
+    ? recents.filter((e) => favorites.some((f) => f.source === e.source && f.source_id === (e.source_id || null) && f.food_name === e.food_name))
+    : recents;
+  return (
+    <div style={listScrollStyle}>
+      {loading && <div style={hintStyle}>Loading\u2026</div>}
+      {!loading && filtered.length === 0 && tab === 'recent' && (
+        <div style={hintStyle}>
+          Nothing logged yet. <button onClick={onSwitchToUsda} style={{ background: 'transparent', border: 'none', color: 'var(--accent-bright)', cursor: 'pointer', textDecoration: 'underline', fontSize: 13, padding: 0 }}>Search USDA</button> to add your first food.
+        </div>
+      )}
+      {!loading && filtered.length === 0 && tab === 'favorites' && (
+        <div style={hintStyle}>No favorites yet. Tap the star next to a logged food on the Today screen to favorite it.</div>
+      )}
+      {filtered.map((e) => (
+        <button key={e.id} onClick={() => onPick(e)} style={hitStyle}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={hitNameStyle}>{e.food_name}</div>
+            <div style={hitMetaStyle}>
+              <span>{e.serving_qty} \u00d7 {e.serving_unit}</span>
+              <span> \u00b7 {Math.round(e.kcal)} kcal</span>
+              <span> \u00b7 {Math.round(e.protein_g)}g P</span>
+            </div>
+          </div>
+          <span style={{ color: 'var(--text-tertiary)', fontSize: 18 }}>\u203a</span>
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const stepBtn = {
   background: 'var(--bg-elev-2)',

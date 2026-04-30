@@ -72,3 +72,60 @@ export function groupBySlot(entries, slots) {
 export function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
+
+
+/**
+ * Recent foods: pulls the last ~200 log entries, dedupes by (food_name + source_id),
+ * keeps each food's most recent serving. Returns up to `limit` unique foods.
+ * The dedupe key is a tuple so e.g. "100g chicken breast" and "1 cup chicken breast"
+ * collapse to one row (same food, the latest serving wins).
+ */
+export async function getRecentFoods(limit = 30) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('*')
+    .eq('user_id', SHARED_USER_ID)
+    .order('logged_at', { ascending: false })
+    .limit(200);
+  if (error) return { ok: false, error, recents: [] };
+
+  const seen = new Map();
+  for (const e of data || []) {
+    const key = `${e.source}:${e.source_id || ''}:${e.food_name.toLowerCase()}`;
+    if (!seen.has(key)) seen.set(key, e);
+    if (seen.size >= limit) break;
+  }
+  return { ok: true, recents: Array.from(seen.values()) };
+}
+
+/** Build a per-100g approximation from a logged entry (so we can re-log with new amount). */
+export function per100gFromEntry(e) {
+  const grams = entryGrams(e);
+  if (!grams) return null;
+  const factor = 100 / grams;
+  return {
+    kcal: round1((e.kcal || 0) * factor),
+    protein_g: round1((e.protein_g || 0) * factor),
+    carbs_g: round1((e.carbs_g || 0) * factor),
+    fat_g: round1((e.fat_g || 0) * factor),
+    fiber_g: round1((e.fiber_g || 0) * factor),
+    sodium_mg: round1((e.sodium_mg || 0) * factor),
+  };
+}
+
+/** Best-effort grams extraction from serving_unit (e.g. "1 large (50 g)"). */
+export function entryGrams(e) {
+  // Try to parse a "(NN g)" gram weight from the serving_unit
+  const m = (e.serving_unit || '').match(/\((\d+(?:\.\d+)?)\s*g\)/i);
+  if (m) return Number(m[1]) * (e.serving_qty || 1);
+  // "100 g" / "1 oz (28 g)" / "1 g" — handle simple "g" units
+  if (/^\d+\s*g$/i.test(e.serving_unit || '')) {
+    const n = parseFloat(e.serving_unit);
+    if (Number.isFinite(n)) return n * (e.serving_qty || 1);
+  }
+  return null;
+}
+
+function round1(n) {
+  return Math.round(n * 10) / 10;
+}

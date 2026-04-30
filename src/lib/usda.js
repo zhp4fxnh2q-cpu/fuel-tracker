@@ -64,3 +64,17 @@ function round(n) {
   if (!Number.isFinite(n)) return 0;
   return Math.round(n * 10) / 10;
 }
+
+
+/** Look up a barcode (UPC/EAN/GTIN). Returns the same shape as getUsdaFood. */
+export async function lookupBarcode(code) {
+  const r = await fetch(`/api/barcode/${encodeURIComponent(code)}`);
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    const err = new Error(`Barcode ${r.status}: ${text.slice(0, 120)}`);
+    err.status = r.status;
+    err.barcode = code;
+    throw err;
+  }
+  return await r.json();
+}

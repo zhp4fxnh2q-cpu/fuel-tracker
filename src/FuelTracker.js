@@ -6,7 +6,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { TABS, DEFAULT_PROFILE, DEFAULT_TARGETS, DEFAULT_PREFERENCES } from './lib/constants';
-import { fetchSettings, saveSettings } from './lib/db';
+import { fetchSettings, saveSettings, toggleFavorite, isFavorited } from './lib/db';
 import { getDayEntries, deleteEntry, sumDay, groupBySlot, todayIso } from './lib/foodLog';
 import CalorieRing from './components/CalorieRing';
 import AddFoodSheet from './components/AddFoodSheet';
@@ -71,6 +71,16 @@ export default function FuelTracker({ session, onSignOut }) {
               await deleteEntry(id);
               refreshDay();
             }}
+            onToggleFavorite={async (sig) => {
+              if (!settings) return;
+              const r = await toggleFavorite(settings, sig);
+              if (r.ok) {
+                setSettings({
+                  ...settings,
+                  preferences: { ...(settings.preferences || {}), favorites: r.favorites },
+                });
+              }
+            }}
           />
         )}
         {activeTab === 'log' && <LogScreen onAddFood={onAddFood} settings={settings} />}
@@ -91,6 +101,7 @@ export default function FuelTracker({ session, onSignOut }) {
         mealSlot={addSlot}
         onClose={() => setAddOpen(false)}
         onLogged={onLogged}
+        settings={settings}
       />
     </div>
   );
@@ -138,7 +149,7 @@ function MissingTableCard() {
 // Today (live)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TodayScreen({ settings, entries, loading, onAddFood, onDelete }) {
+function TodayScreen({ settings, entries, loading, onAddFood, onDelete, onToggleFavorite }) {
   const profile = settings?.profile || DEFAULT_PROFILE;
   const targets = settings?.targets || DEFAULT_TARGETS;
   const prefs = settings?.preferences || DEFAULT_PREFERENCES;
@@ -177,6 +188,8 @@ function TodayScreen({ settings, entries, loading, onAddFood, onDelete }) {
           items={grouped[slot] || []}
           onAdd={() => onAddFood(slot)}
           onDelete={onDelete}
+          settings={settings}
+          onToggleFavorite={onToggleFavorite}
         />
       ))}
 
@@ -210,7 +223,7 @@ function MacroCard({ label, current, target, unit, floor }) {
   );
 }
 
-function MealSection({ slot, items, onAdd, onDelete }) {
+function MealSection({ slot, items, onAdd, onDelete, settings, onToggleFavorite }) {
   const slotKcal = items.reduce((s, e) => s + (e.kcal || 0), 0);
   return (
     <div className="fuel-card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -227,21 +240,30 @@ function MealSection({ slot, items, onAdd, onDelete }) {
           + Add food
         </button>
       </div>
-      {items.map((e) => (
-        <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.3 }}>{e.food_name}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-              {e.serving_qty} × {e.serving_unit} · {Math.round(e.kcal)} kcal · {Math.round(e.protein_g)}g P · {Math.round(e.carbs_g)}g C · {Math.round(e.fat_g)}g F
+      {items.map((e) => {
+        const sig = { source: e.source, source_id: e.source_id, food_name: e.food_name };
+        const fav = isFavorited(settings, sig);
+        return (
+          <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '10px 14px', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.3 }}>{e.food_name}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                {e.serving_qty} \u00d7 {e.serving_unit} \u00b7 {Math.round(e.kcal)} kcal \u00b7 {Math.round(e.protein_g)}g P \u00b7 {Math.round(e.carbs_g)}g C \u00b7 {Math.round(e.fat_g)}g F
+              </div>
             </div>
+            <button
+              onClick={() => onToggleFavorite(sig)}
+              style={{ background: 'transparent', border: 'none', color: fav ? 'var(--accent-bright)' : 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
+              title={fav ? 'Unfavorite' : 'Favorite'}
+            >{fav ? '\u2605' : '\u2606'}</button>
+            <button
+              onClick={() => onDelete(e.id)}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
+              title="Remove"
+            >\u00d7</button>
           </div>
-          <button
-            onClick={() => onDelete(e.id)}
-            style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
-            title="Remove"
-          >×</button>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

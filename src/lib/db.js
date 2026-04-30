@@ -87,3 +87,24 @@ export async function saveSettings(partial) {
     .eq('user_id', SHARED_USER_ID);
   return { ok: !error, error };
 }
+
+
+/** Toggle a favorite by signature {source, source_id, food_name}. */
+export async function toggleFavorite(currentSettings, sig) {
+  const prefs = { ...(currentSettings.preferences || {}) };
+  const list = Array.isArray(prefs.favorites) ? [...prefs.favorites] : [];
+  const idx = list.findIndex((f) => f.source === sig.source && f.source_id === sig.source_id && f.food_name === sig.food_name);
+  if (idx >= 0) list.splice(idx, 1);
+  else list.push(sig);
+  prefs.favorites = list;
+  const { error } = await supabase
+    .from(SETTINGS_TABLE)
+    .update({ preferences: prefs, updated_at: new Date().toISOString() })
+    .eq('user_id', SHARED_USER_ID);
+  return { ok: !error, error, favorites: list };
+}
+
+export function isFavorited(settings, sig) {
+  const list = settings?.preferences?.favorites || [];
+  return list.some((f) => f.source === sig.source && f.source_id === sig.source_id && f.food_name === sig.food_name);
+}
