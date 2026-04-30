@@ -12,7 +12,7 @@ import { supabase, SHARED_USER_ID } from '../supabaseClient';
 import { weeklyReview, confidenceScore } from './algorithm';
 import { getDayEntries, sumDay } from './foodLog';
 import { getAllWeightEntries, recomputeTrend } from './weight';
-import { REVIEW_WINDOW_DAYS, MIN_DAYS_FOR_TDEE, KCAL_PER_LB } from './constants';
+import { REVIEW_WINDOW_DAYS, MIN_DAYS_FOR_TDEE} from './constants';
 
 const REVIEWS_TABLE = 'fuel_weekly_reviews';
 const SETTINGS_TABLE = 'fuel_settings';

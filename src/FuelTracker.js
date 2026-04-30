@@ -526,14 +526,6 @@ function TrendsScreen({ settings, onOpenReview }) {
     </div>
   );
 }
-function Placeholder({ title, body }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="fuel-page-title">{title}</div>
-      <div className="empty"><div className="empty-title">Coming soon.</div>{body}</div>
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Settings (kept from Phase 1, plus a pass-through for HeightInput)
