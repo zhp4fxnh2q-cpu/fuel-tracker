@@ -1,6 +1,6 @@
 // FUEL minimal service worker — cache-first for shell, network-first for API.
 // Real offline-queue logic lives in src/lib/offlineQueue.js (IndexedDB via Dexie).
-const CACHE_NAME = 'fuel-shell-v1';
+const CACHE_NAME = 'fuel-shell-v2';
 const SHELL = ['/', '/index.html', '/manifest.json', '/favicon.svg'];
 
 self.addEventListener('install', (event) => {
