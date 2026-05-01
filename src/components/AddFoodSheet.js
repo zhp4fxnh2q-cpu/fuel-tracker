@@ -25,7 +25,7 @@ const TABS = [
   { id: 'meal_planner', label: 'Meal planner', enabled: false },
 ];
 
-export default function AddFoodSheet({ open, mealSlot, onClose, onLogged, settings }) {
+export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogged, settings }) {
   const [tab, setTab] = useState('recent');
   const [scannerOpen, setScannerOpen] = useState(false);
   const [recents, setRecents] = useState([]);
@@ -46,19 +46,25 @@ export default function AddFoodSheet({ open, mealSlot, onClose, onLogged, settin
 
   const inputRef = useRef(null);
 
-  // Reset on open/close
+  // Reset on open/close. If a prefill query is supplied, auto-switch to USDA
+  // tab and seed the search box.
   useEffect(() => {
     if (open) {
       setStep('search');
-      setQuery('');
-      setResults([]);
       setError(null);
       setFoodDetail(null);
       setPortionIdx(0);
       setAmount(1);
+      if (prefill) {
+        setTab('usda');
+        setQuery(prefill);
+      } else {
+        setQuery('');
+        setResults([]);
+      }
       setTimeout(() => inputRef.current?.focus(), 60);
     }
-  }, [open]);
+  }, [open, prefill]);
 
   // Load recents when the tab is shown
   useEffect(() => {

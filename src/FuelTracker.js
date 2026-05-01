@@ -16,6 +16,7 @@ import WeeklyReviewModal from './components/WeeklyReviewModal';
 import EnergyBalanceChart from './components/EnergyBalanceChart';
 import { isReviewDue, getRecentReviews } from './lib/review';
 import { checkDietBreakNeeded } from './lib/algorithm';
+import { fetchMealPlannerRow, resolveTodaysSlots } from './lib/mealPlanner';
 import AddFoodSheet from './components/AddFoodSheet';
 
 export default function FuelTracker({ session, onSignOut }) {
@@ -27,7 +28,9 @@ export default function FuelTracker({ session, onSignOut }) {
 
   const [addOpen, setAddOpen] = useState(false);
   const [addSlot, setAddSlot] = useState('Breakfast');
+  const [addPrefill, setAddPrefill] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [planSlots, setPlanSlots] = useState([]);
 
   const refreshDay = useCallback(async () => {
     const r = await getDayEntries(todayIso());
@@ -50,6 +53,11 @@ export default function FuelTracker({ session, onSignOut }) {
         setSettings(s.settings);
         if (isReviewDue(s.settings)) setReviewOpen(true);
       }
+      // Pull meal planner plan (best-effort; fails silently if the row is empty)
+      const mp = await fetchMealPlannerRow();
+      if (!cancelled && mp.ok) {
+        setPlanSlots(resolveTodaysSlots(mp.plan, mp.custom_meals));
+      }
       const d = await getDayEntries(todayIso());
       if (cancelled) return;
       if (d.ok) setEntries(d.entries);
@@ -58,8 +66,9 @@ export default function FuelTracker({ session, onSignOut }) {
     return () => { cancelled = true; };
   }, []);
 
-  const onAddFood = (slot) => {
+  const onAddFood = (slot, prefill = '') => {
     setAddSlot(slot);
+    setAddPrefill(prefill);
     setAddOpen(true);
   };
 
@@ -77,6 +86,7 @@ export default function FuelTracker({ session, onSignOut }) {
             settings={settings}
             entries={entries}
             loading={loading}
+            planSlots={planSlots}
             onAddFood={onAddFood}
             onDelete={async (id) => {
               await deleteEntry(id);
@@ -110,6 +120,7 @@ export default function FuelTracker({ session, onSignOut }) {
       <AddFoodSheet
         open={addOpen}
         mealSlot={addSlot}
+        prefill={addPrefill}
         onClose={() => setAddOpen(false)}
         onLogged={onLogged}
         settings={settings}
@@ -166,7 +177,7 @@ function MissingTableCard() {
 // Today (live)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TodayScreen({ settings, entries, loading, onAddFood, onDelete, onToggleFavorite }) {
+function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelete, onToggleFavorite }) {
   const profile = settings?.profile || DEFAULT_PROFILE;
   const targets = settings?.targets || DEFAULT_TARGETS;
   const prefs = settings?.preferences || DEFAULT_PREFERENCES;
@@ -204,9 +215,11 @@ function TodayScreen({ settings, entries, loading, onAddFood, onDelete, onToggle
           slot={slot}
           items={grouped[slot] || []}
           onAdd={() => onAddFood(slot)}
+          onAddPrefilled={(query) => onAddFood(slot, query)}
           onDelete={onDelete}
           settings={settings}
           onToggleFavorite={onToggleFavorite}
+          plan={(planSlots || []).find((p) => p.mealTime === slot)}
         />
       ))}
 
@@ -240,7 +253,7 @@ function MacroCard({ label, current, target, unit, floor }) {
   );
 }
 
-function MealSection({ slot, items, onAdd, onDelete, settings, onToggleFavorite }) {
+function MealSection({ slot, items, onAdd, onAddPrefilled, onDelete, settings, onToggleFavorite, plan }) {
   const slotKcal = items.reduce((s, e) => s + (e.kcal || 0), 0);
   return (
     <div className="fuel-card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -272,6 +285,59 @@ function MealSection({ slot, items, onAdd, onDelete, settings, onToggleFavorite 
           </button>
         </div>
       </div>
+      {plan && (
+        <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: 'rgba(52,211,153,0.04)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <span style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--accent-bright)', textTransform: 'uppercase', fontWeight: 600 }}>Tonight\u2019s plan</span>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>\u00b7 {plan.name}</span>
+            {plan.cuisine && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>\u00b7 {plan.cuisine}</span>}
+          </div>
+          {plan.notes && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, lineHeight: 1.4, fontStyle: 'italic' }}>{plan.notes}</div>}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {plan.ingredients.map((ing, i) => (
+              <button
+                key={i}
+                onClick={() => onAddPrefilled(ing.n)}
+                style={{
+                  background: 'rgba(255,255,255,0.04)', border: '1px solid var(--card-border)',
+                  borderRadius: 999, padding: '4px 10px',
+                  fontSize: 11, color: 'var(--text-primary)',
+                  cursor: 'pointer', whiteSpace: 'nowrap',
+                }}
+                title={`Tap to log ${ing.n} via USDA search`}
+              >
+                {ing.n}
+                <span style={{ color: 'var(--text-tertiary)', marginLeft: 4 }}>{ing.q} {ing.u}</span>
+              </button>
+            ))}
+          </div>
+          {plan.sides && plan.sides.length > 0 && (
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed rgba(255,255,255,0.06)' }}>
+              {plan.sides.map((side, si) => (
+                <div key={si} style={{ marginTop: si === 0 ? 0 : 6 }}>
+                  <div style={{ fontSize: 10, letterSpacing: '0.06em', color: 'var(--text-tertiary)', textTransform: 'uppercase', marginBottom: 4 }}>Side: {side.name}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {(side.ingredients || []).map((ing, i) => (
+                      <button
+                        key={i}
+                        onClick={() => onAddPrefilled(ing.n)}
+                        style={{
+                          background: 'rgba(255,255,255,0.04)', border: '1px solid var(--card-border)',
+                          borderRadius: 999, padding: '4px 10px', fontSize: 11,
+                          color: 'var(--text-primary)', cursor: 'pointer', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {ing.n}
+                        <span style={{ color: 'var(--text-tertiary)', marginLeft: 4 }}>{ing.q} {ing.u}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {items.map((e) => {
         const sig = { source: e.source, source_id: e.source_id, food_name: e.food_name };
         const fav = isFavorited(settings, sig);
