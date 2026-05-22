@@ -7,7 +7,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { TABS, DEFAULT_PROFILE, DEFAULT_TARGETS, DEFAULT_PREFERENCES } from './lib/constants';
 import { fetchSettings, saveSettings, toggleFavorite, isFavorited } from './lib/db';
-import { getDayEntries, deleteEntry, sumDay, groupBySlot, todayIso } from './lib/foodLog';
+import { getDayEntries, deleteEntry, sumDay, groupBySlot, todayIso, addEntry } from './lib/foodLog';
 import CalorieRing from './components/CalorieRing';
 import WeightChart from './components/WeightChart';
 import { getWeightEntries, addOrUpdateWeight, computeStats, recomputeTrend } from './lib/weight';
@@ -17,7 +17,6 @@ import EnergyBalanceChart from './components/EnergyBalanceChart';
 import { isReviewDue, getRecentReviews } from './lib/review';
 import { checkDietBreakNeeded } from './lib/algorithm';
 import { fetchMealPlannerRow, resolveTodaysSlots, resolveIngredientMacros, slotTotalMacros, buildLogEntriesForSlot } from './lib/mealPlanner';
-import { addEntry } from './lib/foodLog';
 import AddFoodSheet from './components/AddFoodSheet';
 
 export default function FuelTracker({ session, onSignOut }) {
