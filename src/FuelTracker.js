@@ -20,6 +20,7 @@ import { MACRO_PRESETS } from './lib/constants';
 import { fetchMealPlannerRow, resolveTodaysSlots, resolveIngredientMacros, slotTotalMacros, buildLogEntriesForSlot } from './lib/mealPlanner';
 import AddFoodSheet from './components/AddFoodSheet';
 import PotTracker from './components/PotTracker';
+import PlannedMealBlock from './components/PlannedMealBlock';
 
 export default function FuelTracker({ session, onSignOut }) {
   const [activeTab, setActiveTab] = useState('today');
@@ -357,97 +358,6 @@ function MealSection({ slot, items, onAdd, onAddPrefilled, onDelete, settings, o
     </div>
   );
 }
-
-function PlannedMealBlock({ plan, slot, onAddPrefilled, onAfterLogAll }) {
-  const [logging, setLogging] = useState(false);
-  const [logErr, setLogErr] = useState(null);
-  const totals = slotTotalMacros(plan);
-  const allIngredients = [
-    ...plan.ingredients.map((ing) => ({ ing, sideName: null })),
-    ...(plan.sides || []).flatMap((side) =>
-      (side.ingredients || []).map((ing) => ({ ing, sideName: side.name }))),
-  ];
-
-  const onLogAll = async () => {
-    if (logging) return;
-    setLogging(true);
-    setLogErr(null);
-    const rows = buildLogEntriesForSlot(plan, todayIso(), slot);
-    let failures = 0;
-    for (const row of rows) {
-      const r = await addEntry(row);
-      if (!r.ok) failures++;
-    }
-    setLogging(false);
-    if (failures > 0) {
-      setLogErr(`Logged ${rows.length - failures} of ${rows.length}; ${failures} failed.`);
-    }
-    if (onAfterLogAll) onAfterLogAll();
-  };
-
-  return (
-    <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: 'rgba(52,211,153,0.04)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--accent-bright)', textTransform: 'uppercase', fontWeight: 600 }}>Planned</span>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>· {plan.name}</span>
-        {plan.cuisine && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>· {plan.cuisine}</span>}
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8 }}>
-        <strong style={{ color: 'var(--text-primary)' }}>{totals.kcal} kcal</strong>
-        {' · '}{totals.protein_g}g P · {totals.carbs_g}g C · {totals.fat_g}g F
-        <span style={{ color: 'var(--text-tertiary)' }}> · 1 serving (of {plan.servings})</span>
-        {totals.unresolved > 0 && (
-          <span style={{ color: 'var(--warn)' }}> · {totals.unresolved} unresolved</span>
-        )}
-      </div>
-      {plan.notes && (
-        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8, lineHeight: 1.4, fontStyle: 'italic' }}>
-          {plan.notes}
-        </div>
-      )}
-
-      <button
-        onClick={onLogAll}
-        disabled={logging}
-        className="fuel-btn fuel-btn-primary"
-        style={{ width: '100%', padding: '10px 14px', marginBottom: 10, fontSize: 13 }}
-      >
-        {logging ? 'Logging…' : `Log this meal (${totals.kcal} kcal)`}
-      </button>
-      {logErr && <div style={{ fontSize: 11, color: 'var(--danger)', marginBottom: 8 }}>{logErr}</div>}
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-        {allIngredients.map(({ ing, sideName }, i) => {
-          const macro = resolveIngredientMacros(ing, plan.servings || 1);
-          return (
-            <button
-              key={i}
-              onClick={() => onAddPrefilled(ing.n)}
-              style={{
-                background: macro.resolved ? 'rgba(255,255,255,0.04)' : 'rgba(245,158,11,0.10)',
-                border: '1px solid var(--card-border)',
-                borderRadius: 8, padding: '4px 8px',
-                fontSize: 11, color: 'var(--text-primary)',
-                cursor: 'pointer', textAlign: 'left',
-              }}
-              title={macro.resolved
-                ? `${ing.q} ${ing.u} ÷ ${plan.servings} = ${Math.round(macro.grams)}g · ${macro.kcal} kcal`
-                : `${ing.n} — not in USDA seed map`}
-            >
-              {sideName && <span style={{ color: 'var(--text-tertiary)' }}>[{sideName}] </span>}
-              {ing.n}
-              <span style={{ color: 'var(--text-tertiary)', marginLeft: 4 }}>{ing.q} {ing.u}</span>
-              {macro.resolved && (
-                <span style={{ color: 'var(--accent-bright)', marginLeft: 4 }}>{macro.kcal}k</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Other tabs
 // ─────────────────────────────────────────────────────────────────────────────
