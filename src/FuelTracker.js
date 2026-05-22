@@ -16,7 +16,8 @@ import WeeklyReviewModal from './components/WeeklyReviewModal';
 import EnergyBalanceChart from './components/EnergyBalanceChart';
 import { isReviewDue, getRecentReviews } from './lib/review';
 import { checkDietBreakNeeded } from './lib/algorithm';
-import { fetchMealPlannerRow, resolveTodaysSlots } from './lib/mealPlanner';
+import { fetchMealPlannerRow, resolveTodaysSlots, resolveIngredientMacros, slotTotalMacros, buildLogEntriesForSlot } from './lib/mealPlanner';
+import { addEntry } from './lib/foodLog';
 import AddFoodSheet from './components/AddFoodSheet';
 
 export default function FuelTracker({ session, onSignOut }) {
@@ -102,6 +103,7 @@ export default function FuelTracker({ session, onSignOut }) {
                 });
               }
             }}
+            onAfterLogAll={refreshDay}
           />
         )}
         {activeTab === 'log' && <LogScreen onAddFood={onAddFood} settings={settings} />}
