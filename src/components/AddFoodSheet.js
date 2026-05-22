@@ -13,6 +13,7 @@ import { searchUsda, getUsdaFood, macrosAtGrams, detailFromSearchHit, lookupBarc
 import { getRecentFoods, per100gFromEntry, entryGrams } from '../lib/foodLog';
 import BarcodeScanner from './BarcodeScanner';
 import { getSavedMeals, logSavedMeal, deleteSavedMeal } from '../lib/savedMeals';
+import { fetchMealPlannerRow, resolveTodaysSlots, buildLogEntriesForSlot, resolveIngredientMacros } from '../lib/mealPlanner';
 import { addEntry, todayIso } from '../lib/foodLog';
 import { SOURCE } from '../lib/constants';
 
@@ -22,7 +23,7 @@ const TABS = [
   { id: 'favorites', label: 'Favorites', enabled: true },
   { id: 'saved', label: 'Saved', enabled: true },
   { id: 'usda', label: 'USDA', enabled: true },
-  { id: 'meal_planner', label: 'Meal planner', enabled: false },
+  { id: 'meal_planner', label: 'Meal planner', enabled: true },
 ];
 
 export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogged, settings }) {
@@ -32,6 +33,8 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
   const [recentsLoading, setRecentsLoading] = useState(false);
   const [savedMeals, setSavedMeals] = useState([]);
   const [savedLoading, setSavedLoading] = useState(false);
+  const [plannerSlots, setPlannerSlots] = useState([]);
+  const [plannerLoading, setPlannerLoading] = useState(false);
   const [step, setStep] = useState('search'); // 'search' | 'quantity'
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -91,6 +94,24 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
       if (cancelled) return;
       setSavedMeals(r.meals || []);
       setSavedLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [open, tab]);
+
+  // Load today's meal-planner slots
+  useEffect(() => {
+    if (!open || tab !== 'meal_planner') return;
+    let cancelled = false;
+    setPlannerLoading(true);
+    (async () => {
+      const r = await fetchMealPlannerRow();
+      if (cancelled) return;
+      if (r.ok) {
+        setPlannerSlots(resolveTodaysSlots(r.plan, r.custom_meals));
+      } else {
+        setPlannerSlots([]);
+      }
+      setPlannerLoading(false);
     })();
     return () => { cancelled = true; };
   }, [open, tab]);
@@ -348,6 +369,28 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
                   if (!window.confirm('Delete this saved meal?')) return;
                   await deleteSavedMeal(id);
                   setSavedMeals(savedMeals.filter((m) => m.id !== id));
+                }}
+              />
+            )}
+
+            {tab === 'meal_planner' && (
+              <PlannerSlotsList
+                slots={plannerSlots}
+                loading={plannerLoading}
+                mealSlot={mealSlot}
+                onLogSlot={async (slot) => {
+                  const rows = buildLogEntriesForSlot(slot, todayIso(), mealSlot);
+                  let failures = 0;
+                  for (const row of rows) {
+                    const r = await addEntry(row);
+                    if (!r.ok) failures++;
+                  }
+                  if (failures === 0) {
+                    onLogged?.();
+                    onClose();
+                  } else {
+                    setError(`Logged ${rows.length - failures} of ${rows.length}; ${failures} failed.`);
+                  }
                 }}
               />
             )}
@@ -653,6 +696,58 @@ function SavedMealsList({ meals, loading, mealSlot, onLog, onDelete }) {
           >×</button>
         </div>
       ))}
+    </div>
+  );
+}
+
+function PlannerSlotsList({ slots, loading, mealSlot, onLogSlot }) {
+  if (loading) return <div style={hintStyle}>Loading…</div>;
+  if (!slots || slots.length === 0) {
+    return (
+      <div style={hintStyle}>
+        Nothing on today's plan. Open your meal planner app to schedule meals — they'll appear here when you do.
+      </div>
+    );
+  }
+  return (
+    <div style={listScrollStyle}>
+      {slots.map((slot, i) => (
+        <div key={i} style={{ padding: '12px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{slot.name}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                {slot.mealTime} · {slot.cuisine || '—'} · serves {slot.servings}
+              </div>
+            </div>
+            <button onClick={() => onLogSlot(slot)} className="fuel-btn fuel-btn-primary" style={{ padding: '6px 12px', fontSize: 12 }}>
+              Log 1 serving →
+            </button>
+          </div>
+          <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {slot.ingredients.map((ing, j) => {
+              const m = resolveIngredientMacros(ing, slot.servings || 1);
+              return (
+                <span
+                  key={j}
+                  style={{
+                    fontSize: 10, color: 'var(--text-secondary)',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--card-border)',
+                    borderRadius: 6, padding: '2px 6px',
+                  }}
+                  title={m.resolved ? `${m.kcal} kcal/serving` : 'not in seed map'}
+                >
+                  {ing.n} <span style={{ color: 'var(--text-tertiary)' }}>{ing.q}{ing.u}</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      <div style={{ padding: '12px 8px', fontSize: 11, color: 'var(--text-tertiary)', textAlign: 'center' }}>
+        Logging into <strong>{mealSlot}</strong>.
+      </div>
     </div>
   );
 }

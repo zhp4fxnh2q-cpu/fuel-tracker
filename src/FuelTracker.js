@@ -262,9 +262,7 @@ function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelet
         <MacroCard label="Fat" current={totals.fat_g} target={fatTarget} unit="g" floor />
       </div>
 
-      {loading && entries.length === 0 && (
-        <div style={{ padding: 16, color: 'var(--text-tertiary)', fontSize: 12, textAlign: 'center' }}>Loading today…</div>
-      )}
+
 
       {!loading && prefs.meal_slots.map((slot) => (
         <MealSection
