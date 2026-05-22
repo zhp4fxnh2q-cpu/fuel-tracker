@@ -51,19 +51,35 @@ function buildPortions(food) {
   for (const p of food.foodPortions || []) {
     const grams = p.gramWeight;
     if (!grams || grams <= 0) continue;
-    const amount = p.amount ?? 1;
-    const modifier = (p.modifier || '').trim();
-    const measureName = p.measureUnit?.name || '';
-    let label;
-    if (modifier && measureName && measureName !== 'undetermined') {
-      label = `${amount} ${measureName} ${modifier}`;
-    } else if (modifier) {
-      label = amount === 1 ? modifier : `${amount} × ${modifier}`;
-    } else if (measureName && measureName !== 'undetermined') {
-      label = `${amount} ${measureName}`;
+
+    // FNDDS items put the readable text in portionDescription
+    // (e.g. "1 large", "1 cup, chopped"). SR Legacy items use the
+    // modifier/measureUnit/amount triple. Try FNDDS first, fall back.
+    const fnddsDesc = (p.portionDescription || '').trim();
+    let label = '';
+
+    if (fnddsDesc && fnddsDesc.toLowerCase() !== 'quantity not specified') {
+      label = fnddsDesc;
     } else {
-      continue;
+      const amount = p.amount ?? 1;
+      const modifier = (p.modifier || '').trim();
+      const measureName = (p.measureUnit?.name || '').trim();
+      const measureIsPlaceholder =
+        !measureName || measureName === 'undetermined' || /^\d+$/.test(measureName);
+
+      if (modifier && !measureIsPlaceholder) {
+        label = `${amount} ${measureName} ${modifier}`;
+      } else if (modifier) {
+        label = amount === 1 ? modifier : `${amount} × ${modifier}`;
+      } else if (!measureIsPlaceholder) {
+        label = `${amount} ${measureName}`;
+      } else {
+        // No readable text anywhere — skip this portion entirely rather
+        // than show a raw FNDDS code like "90000".
+        continue;
+      }
     }
+
     list.push({ label: `${label} (${Math.round(grams)} g)`, grams });
   }
 

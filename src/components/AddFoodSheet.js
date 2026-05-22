@@ -144,6 +144,46 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
     }
   };
 
+  // One-tap log from search result: resolve the food, pick the default
+  // portion, set amount=1, log, close. No quantity step. Used by the
+  // "+" button on USDA search rows.
+  const quickLogFromHit = async (hit, e) => {
+    e?.stopPropagation();
+    e?.preventDefault();
+    try {
+      let detail;
+      try {
+        detail = await getUsdaFood(hit.fdcId);
+      } catch (err) {
+        if (err.status === 404) detail = detailFromSearchHit(hit);
+        else throw err;
+      }
+      const idx = pickDefaultPortionIdx(detail.portions);
+      const portion = detail.portions[idx];
+      const grams = portion.grams * 1;
+      const macros = macrosAtGrams(detail.per100g, grams);
+      const entry = {
+        date: todayIso(),
+        meal_slot: mealSlot,
+        food_name: detail.name,
+        serving_qty: 1,
+        serving_unit: portion.label,
+        ...macros,
+        source: SOURCE.USDA,
+        source_id: String(detail.fdcId),
+      };
+      const r = await addEntry(entry);
+      if (r.ok) {
+        onLogged?.(entry);
+        onClose();
+      } else {
+        setError(r.error?.message || 'Quick-log failed');
+      }
+    } catch (err) {
+      setError(err.message || 'Quick-log failed');
+    }
+  };
+
   const onPickRecent = (entry) => {
     // Build a synthetic detail from the recent entry — gives us per-100g + plain gram portions.
     const per100g = per100gFromEntry(entry);
@@ -257,17 +297,23 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
                     <div style={hintStyle}>Type at least 2 characters to search USDA, or tap the camera icon to scan a barcode.</div>
                   )}
                   {results.map((hit) => (
-                    <button key={hit.fdcId} onClick={() => onPick(hit)} style={hitStyle}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={hitNameStyle}>{hit.name}</div>
-                        <div style={hitMetaStyle}>
-                          <span style={dataTypeBadge(hit.dataType)}>{hit.dataType}</span>
-                          {hit.brand && <span> · {hit.brand}</span>}
-                          <span> · {Math.round(hit.per100g.kcal || 0)} kcal · {Math.round(hit.per100g.protein_g || 0)}g P / 100g</span>
+                    <div key={hit.fdcId} style={hitRowStyle}>
+                      <button onClick={() => onPick(hit)} style={hitBodyStyle}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={hitNameStyle}>{hit.name}</div>
+                          <div style={hitMetaStyle}>
+                            <span style={dataTypeBadge(hit.dataType)}>{hit.dataType}</span>
+                            {hit.brand && <span> · {hit.brand}</span>}
+                            <span> · {Math.round(hit.per100g.kcal || 0)} kcal · {Math.round(hit.per100g.protein_g || 0)}g P / 100g</span>
+                          </div>
                         </div>
-                      </div>
-                      <span style={{ color: 'var(--text-tertiary)', fontSize: 18 }}>›</span>
-                    </button>
+                      </button>
+                      <button
+                        onClick={(e) => quickLogFromHit(hit, e)}
+                        title="Quick-log 1 default serving"
+                        style={quickAddBtnStyle}
+                      >+</button>
+                    </div>
                   ))}
                 </div>
               </>
@@ -642,6 +688,35 @@ function RecentList({ recents, loading, tab, favorites, onPick, onSwitchToUsda }
     </div>
   );
 }
+
+
+const hitRowStyle = {
+  display: 'flex',
+  alignItems: 'stretch',
+  gap: 6,
+  borderBottom: '1px solid rgba(255,255,255,0.04)',
+};
+
+const hitBodyStyle = {
+  ...hitStyle,
+  border: 'none',
+  borderBottom: 'none',
+  flex: 1,
+};
+
+const quickAddBtnStyle = {
+  background: 'var(--accent-fill)',
+  border: '1px solid var(--card-border)',
+  color: 'var(--accent-bright)',
+  width: 44,
+  borderRadius: 10,
+  fontSize: 22,
+  fontWeight: 600,
+  cursor: 'pointer',
+  flexShrink: 0,
+  alignSelf: 'center',
+  marginRight: 4,
+};
 
 const stepBtn = {
   background: 'var(--bg-elev-2)',
