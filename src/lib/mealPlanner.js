@@ -1,755 +1,180 @@
 /**
- * FUEL — main authenticated shell.
- * Phase 3: live food logging. Today screen pulls fuel_food_log + fuel_settings
- * and renders a real calorie ring, real macro bars, per-meal-slot sections,
- * and an "Add food" flow that hits USDA via the Pages Function.
+ * FUEL — meal planner integration.
+ * Reads the meal_planner_data row from Supabase (same project, shared user_id,
+ * RLS allows authenticated owner). Resolves today's plan slots to meal names +
+ * ingredient lists using the static MEALS_DATA / INGREDIENTS_DATA / SIDES_DATA
+ * pulled from the meal planner via scripts/sync-meal-data.sh.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { TABS, DEFAULT_PROFILE, DEFAULT_TARGETS, DEFAULT_PREFERENCES } from './lib/constants';
-import { fetchSettings, saveSettings, toggleFavorite, isFavorited } from './lib/db';
-import { getDayEntries, deleteEntry, sumDay, groupBySlot, todayIso } from './lib/foodLog';
-import CalorieRing from './components/CalorieRing';
-import WeightChart from './components/WeightChart';
-import { getWeightEntries, addOrUpdateWeight, computeStats, recomputeTrend } from './lib/weight';
-import { saveMeal as saveMealApi } from './lib/savedMeals';
-import WeeklyReviewModal from './components/WeeklyReviewModal';
-import EnergyBalanceChart from './components/EnergyBalanceChart';
-import { isReviewDue, getRecentReviews } from './lib/review';
-import { checkDietBreakNeeded } from './lib/algorithm';
-import { fetchMealPlannerRow, resolveTodaysSlots, resolveIngredientMacros, slotTotalMacros, buildLogEntriesForSlot } from './lib/mealPlanner';
-import { addEntry } from './lib/foodLog';
-import AddFoodSheet from './components/AddFoodSheet';
+import { supabase, SHARED_USER_ID } from '../supabaseClient';
+import { MEALS_DATA, INGREDIENTS_DATA, SIDES_DATA } from '../sharedMealData';
+import RESOLVED from './resolvedIngredients.json';
 
-export default function FuelTracker({ session, onSignOut }) {
-  const [activeTab, setActiveTab] = useState('today');
-  const [settings, setSettings] = useState(null);
-  const [missingTable, setMissingTable] = useState(false);
-  const [entries, setEntries] = useState([]);
-  const [loading, setLoading] = useState(true);
+const TABLE = 'meal_planner_data';
 
-  const [addOpen, setAddOpen] = useState(false);
-  const [addSlot, setAddSlot] = useState('Breakfast');
-  const [addPrefill, setAddPrefill] = useState('');
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [planSlots, setPlanSlots] = useState([]);
+const MEALS_BY_ID = Object.fromEntries(MEALS_DATA.map((m) => [m.id, m]));
+const SIDES_BY_ID = Object.fromEntries(SIDES_DATA.map((s) => [s.id, s]));
 
-  const refreshDay = useCallback(async () => {
-    const r = await getDayEntries(todayIso());
-    if (r.ok) setEntries(r.entries);
-  }, []);
-
-  // Initial load: settings + day entries
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      const s = await fetchSettings();
-      if (cancelled) return;
-      if (s.missingTable) {
-        setMissingTable(true);
-        setLoading(false);
-        return;
-      }
-      if (s.ok) {
-        setSettings(s.settings);
-        if (isReviewDue(s.settings)) setReviewOpen(true);
-      }
-      // Pull meal planner plan (best-effort; fails silently if the row is empty)
-      const mp = await fetchMealPlannerRow();
-      if (!cancelled && mp.ok) {
-        setPlanSlots(resolveTodaysSlots(mp.plan, mp.custom_meals));
-      }
-      const d = await getDayEntries(todayIso());
-      if (cancelled) return;
-      if (d.ok) setEntries(d.entries);
-      setLoading(false);
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  const onAddFood = (slot, prefill = '') => {
-    setAddSlot(slot);
-    setAddPrefill(prefill);
-    setAddOpen(true);
-  };
-
-  const onLogged = async () => {
-    await refreshDay();
-  };
-
-  return (
-    <div className="fuel-app">
-      <main className="fuel-page">
-        <Header session={session} onSignOut={onSignOut} />
-        {missingTable && <MissingTableCard />}
-        {!missingTable && activeTab === 'today' && (
-          <TodayScreen
-            settings={settings}
-            entries={entries}
-            loading={loading}
-            planSlots={planSlots}
-            onAddFood={onAddFood}
-            onDelete={async (id) => {
-              await deleteEntry(id);
-              refreshDay();
-            }}
-            onToggleFavorite={async (sig) => {
-              if (!settings) return;
-              const r = await toggleFavorite(settings, sig);
-              if (r.ok) {
-                setSettings({
-                  ...settings,
-                  preferences: { ...(settings.preferences || {}), favorites: r.favorites },
-                });
-              }
-            }}
-          />
-        )}
-        {activeTab === 'log' && <LogScreen onAddFood={onAddFood} settings={settings} />}
-        {activeTab === 'weight' && <WeightScreen settings={settings} />}
-        {activeTab === 'trends' && <TrendsScreen settings={settings} onOpenReview={() => setReviewOpen(true)} />}
-        {activeTab === 'settings' && (
-          <SettingsScreen
-            onSignOut={onSignOut}
-            settings={settings}
-            missingTable={missingTable}
-            onSettingsSaved={(s) => setSettings(s)}
-          />
-        )}
-      </main>
-      <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
-      <AddFoodSheet
-        open={addOpen}
-        mealSlot={addSlot}
-        prefill={addPrefill}
-        onClose={() => setAddOpen(false)}
-        onLogged={onLogged}
-        settings={settings}
-      />
-      <WeeklyReviewModal
-        open={reviewOpen}
-        settings={settings}
-        onClose={() => setReviewOpen(false)}
-        onCommitted={(s) => { setSettings(s); setReviewOpen(false); }}
-      />
-    </div>
-  );
+/** Pulls David's plan + custom_meals from meal_planner_data. */
+export async function fetchMealPlannerRow() {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('plan, custom_meals')
+    .eq('user_id', SHARED_USER_ID)
+    .maybeSingle();
+  if (error) return { ok: false, error };
+  return { ok: true, plan: data?.plan || [], custom_meals: data?.custom_meals || [] };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Header
-// ─────────────────────────────────────────────────────────────────────────────
-
-function Header({ session, onSignOut }) {
-  const dateLabel = useMemo(() => {
-    return new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-  }, []);
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 12, marginBottom: 16 }}>
-      <div>
-        <div className="fuel-page-title">{dateLabel}</div>
-        <div className="fuel-mark" style={{ fontSize: 28, marginTop: 2 }}>FUEL</div>
-      </div>
-      <button
-        onClick={onSignOut}
-        className="fuel-btn fuel-btn-ghost"
-        style={{ fontSize: 11, padding: '6px 10px', letterSpacing: '0.08em' }}
-        title={session?.user?.email || ''}
-      >
-        SIGN OUT
-      </button>
-    </div>
-  );
-}
-
-function MissingTableCard() {
-  return (
-    <div className="fuel-card" style={{ borderColor: 'rgba(245,158,11,0.32)', background: 'var(--warn-fill)' }}>
-      <div className="fuel-label" style={{ color: 'var(--warn)' }}>Database setup needed</div>
-      <div style={{ marginTop: 8, fontSize: 14, lineHeight: 1.5 }}>
-        FUEL is connected to Supabase but the <code>fuel_*</code> tables haven't been created yet.
-        Run <code>migrations/0001_fuel_initial.sql</code> in the Supabase SQL editor, then reload.
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Today (live)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelete, onToggleFavorite }) {
-  const profile = settings?.profile || DEFAULT_PROFILE;
-  const targets = settings?.targets || DEFAULT_TARGETS;
-  const prefs = settings?.preferences || DEFAULT_PREFERENCES;
-
-  // Phase 3 simplification: assume training day (use training_kcal target).
-  // Phase 6 will plug FORGE / training_day_overrides into this.
-  const dayTarget = targets.training_kcal ?? 2650;
-  const proteinTarget = Math.round(profile.weight_lbs * (targets.protein_g_per_lb ?? 1));
-  const fatTarget = Math.round(profile.weight_lbs * (targets.fat_g_per_lb ?? 0.3));
-  const carbsTarget = Math.max(0, Math.round((dayTarget - proteinTarget * 4 - fatTarget * 9) / 4));
-
-  const totals = sumDay(entries);
-  const grouped = groupBySlot(entries, prefs.meal_slots);
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <div className="fuel-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 16px' }}>
-        <CalorieRing current={totals.kcal} target={dayTarget} />
-        <div style={{ marginTop: 6, fontSize: 11, letterSpacing: '0.12em', color: 'var(--text-tertiary)' }}>
-          TRAINING DAY · {Math.round(targets.training_kcal ?? 2650).toLocaleString()} TARGET
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-        <MacroCard label="Protein" current={totals.protein_g} target={proteinTarget} unit="g" floor />
-        <MacroCard label="Carbs" current={totals.carbs_g} target={carbsTarget} unit="g" />
-        <MacroCard label="Fat" current={totals.fat_g} target={fatTarget} unit="g" floor />
-      </div>
-
-      {loading && <div className="empty">Loading today…</div>}
-
-      {!loading && prefs.meal_slots.map((slot) => (
-        <MealSection
-          key={slot}
-          slot={slot}
-          items={grouped[slot] || []}
-          onAdd={() => onAddFood(slot)}
-          onAddPrefilled={(query) => onAddFood(slot, query)}
-          onDelete={onDelete}
-          settings={settings}
-          onToggleFavorite={onToggleFavorite}
-          plan={(planSlots || []).find((p) => p.mealTime === slot)}
-        />
-      ))}
-
-      {!loading && entries.length === 0 && (
-        <div className="empty">
-          <div className="empty-title">Empty day so far.</div>
-          Tap "Add food" under a meal to start logging. The rings update as you go.
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MacroCard({ label, current, target, unit, floor }) {
-  const pct = target > 0 ? Math.min(100, (current / target) * 100) : 0;
-  const remaining = Math.max(0, target - current);
-  return (
-    <div className="fuel-card" style={{ padding: 12 }}>
-      <div className="fuel-label">{label}{floor && <span style={{ color: 'var(--text-tertiary)', marginLeft: 4 }}>· min {target}{unit}</span>}</div>
-      <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4 }}>
-        {Math.round(current)}
-        <span style={{ color: 'var(--text-tertiary)', fontSize: 13, fontWeight: 400 }}>{` / ${target}${unit}`}</span>
-      </div>
-      <div style={{ height: 4, marginTop: 8, background: 'rgba(255,255,255,0.06)', borderRadius: 999, overflow: 'hidden' }}>
-        <div style={{ width: `${pct}%`, height: '100%', background: 'var(--gradient-fuel)' }} />
-      </div>
-      <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 6, letterSpacing: '0.06em' }}>
-        {current > target ? `OVER ${Math.round(current - target)} ${unit}` : `${Math.round(remaining)} ${unit} LEFT`}
-      </div>
-    </div>
-  );
-}
-
-function MealSection({ slot, items, onAdd, onAddPrefilled, onDelete, settings, onToggleFavorite, plan }) {
-  const slotKcal = items.reduce((s, e) => s + (e.kcal || 0), 0);
-  return (
-    <div className="fuel-card" style={{ padding: 0, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: items.length ? '1px solid rgba(255,255,255,0.04)' : 'none' }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.04em' }}>{slot}</div>
-          {items.length > 0 && (
-            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-              {items.length} item{items.length === 1 ? '' : 's'} · {Math.round(slotKcal)} kcal
-            </div>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {items.length > 0 && (
-            <button
-              onClick={async () => {
-                const name = window.prompt(`Save these ${items.length} item${items.length === 1 ? '' : 's'} as a saved meal?\n\nName:`, slot === 'Breakfast' ? 'My usual breakfast' : `${slot} — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
-                if (!name || !name.trim()) return;
-                const r = await saveMealApi({ name: name.trim(), entries: items });
-                if (!r.ok) alert('Save failed: ' + (r.error?.message || 'unknown'));
-              }}
-              className="fuel-btn fuel-btn-ghost"
-              style={{ padding: '6px 10px', fontSize: 11, letterSpacing: '0.06em' }}
-              title="Save as meal"
-            >SAVE</button>
-          )}
-          <button onClick={onAdd} className="fuel-btn fuel-btn-primary" style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600 }}>
-            + Add food
-          </button>
-        </div>
-      </div>
-      {plan && (
-        <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: 'rgba(52,211,153,0.04)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <span style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--accent-bright)', textTransform: 'uppercase', fontWeight: 600 }}>Tonight’s plan</span>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>· {plan.name}</span>
-            {plan.cuisine && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>· {plan.cuisine}</span>}
-          </div>
-          {plan.notes && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, lineHeight: 1.4, fontStyle: 'italic' }}>{plan.notes}</div>}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-            {plan.ingredients.map((ing, i) => (
-              <button
-                key={i}
-                onClick={() => onAddPrefilled(ing.n)}
-                style={{
-                  background: 'rgba(255,255,255,0.04)', border: '1px solid var(--card-border)',
-                  borderRadius: 999, padding: '4px 10px',
-                  fontSize: 11, color: 'var(--text-primary)',
-                  cursor: 'pointer', whiteSpace: 'nowrap',
-                }}
-                title={`Tap to log ${ing.n} via USDA search`}
-              >
-                {ing.n}
-                <span style={{ color: 'var(--text-tertiary)', marginLeft: 4 }}>{ing.q} {ing.u}</span>
-              </button>
-            ))}
-          </div>
-          {plan.sides && plan.sides.length > 0 && (
-            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed rgba(255,255,255,0.06)' }}>
-              {plan.sides.map((side, si) => (
-                <div key={si} style={{ marginTop: si === 0 ? 0 : 6 }}>
-                  <div style={{ fontSize: 10, letterSpacing: '0.06em', color: 'var(--text-tertiary)', textTransform: 'uppercase', marginBottom: 4 }}>Side: {side.name}</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {(side.ingredients || []).map((ing, i) => (
-                      <button
-                        key={i}
-                        onClick={() => onAddPrefilled(ing.n)}
-                        style={{
-                          background: 'rgba(255,255,255,0.04)', border: '1px solid var(--card-border)',
-                          borderRadius: 999, padding: '4px 10px', fontSize: 11,
-                          color: 'var(--text-primary)', cursor: 'pointer', whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {ing.n}
-                        <span style={{ color: 'var(--text-tertiary)', marginLeft: 4 }}>{ing.q} {ing.u}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-      {items.map((e) => {
-        const sig = { source: e.source, source_id: e.source_id, food_name: e.food_name };
-        const fav = isFavorited(settings, sig);
-        return (
-          <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '10px 14px', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.3 }}>{e.food_name}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-                {e.serving_qty} × {e.serving_unit} · {Math.round(e.kcal)} kcal · {Math.round(e.protein_g)}g P · {Math.round(e.carbs_g)}g C · {Math.round(e.fat_g)}g F
-              </div>
-            </div>
-            <button
-              onClick={() => onToggleFavorite(sig)}
-              style={{ background: 'transparent', border: 'none', color: fav ? 'var(--accent-bright)' : 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
-              title={fav ? 'Unfavorite' : 'Favorite'}
-            >{fav ? '★' : '☆'}</button>
-            <button
-              onClick={() => onDelete(e.id)}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
-              title="Remove"
-            >×</button>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Other tabs
-// ─────────────────────────────────────────────────────────────────────────────
-
-function LogScreen({ onAddFood, settings }) {
-  const slots = settings?.preferences?.meal_slots || DEFAULT_PREFERENCES.meal_slots;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div className="fuel-page-title">Log food to a meal</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-        {slots.map((s) => (
-          <button
-            key={s}
-            onClick={() => onAddFood(s)}
-            className="fuel-btn"
-            style={{ padding: '14px 12px', justifyContent: 'flex-start' }}
-          >
-            <span style={{ fontWeight: 600 }}>{s}</span>
-            <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary)', fontSize: 12 }}>›</span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function WeightScreen({ settings }) {
-  const [entries, setEntries] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState('');
-  const [draftDate, setDraftDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-
-  const goalWeight = null; // future: settings.profile.goal_weight_lbs
-
-  const refresh = async () => {
-    const r = await getWeightEntries(90);
-    if (r.ok) {
-      setEntries(recomputeTrend(r.entries));
-    }
-    setLoading(false);
-  };
-
-  useEffect(() => { refresh(); }, []);
-
-  const onLog = async () => {
-    const w = Number(draft);
-    if (!Number.isFinite(w) || w < 50 || w > 600) {
-      setError('Enter a weight between 50 and 600 lbs.');
-      return;
-    }
-    setError(null);
-    setSaving(true);
-    const r = await addOrUpdateWeight({ date: draftDate, weight_lbs: w });
-    setSaving(false);
-    if (r.ok) {
-      setDraft('');
-      refresh();
-    } else {
-      setError(r.error?.message || 'Save failed');
-    }
-  };
-
-  const stats = computeStats(entries);
+/**
+ * Returns slots planned for today, resolved with meal name + ingredients.
+ * Slots without a meal_id (empty placeholders) are filtered out.
+ *
+ * Slot shape coming back:
+ *   { mealTime, name, ingredients: [{n,q,u,c}], sides: [{name, ingredients}] }
+ */
+export function resolveTodaysSlots(plan, customMeals) {
   const today = new Date().toISOString().slice(0, 10);
+  const customById = Object.fromEntries((customMeals || []).map((m) => [m.id, m]));
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="fuel-page-title">Weight</div>
-
-      <div className="fuel-card">
-        <div className="fuel-label" style={{ marginBottom: 8 }}>Log weight</div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="number" inputMode="decimal" step="0.1" min="50" max="600"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={stats ? String(stats.raw_today) : 'lbs'}
-            style={{ ...fieldStyle, flex: 1, fontSize: 16, padding: '12px 14px' }}
-          />
-          <input
-            type="date"
-            value={draftDate}
-            max={today}
-            onChange={(e) => setDraftDate(e.target.value)}
-            style={{ ...fieldStyle, padding: '12px 10px' }}
-          />
-          <button
-            onClick={onLog}
-            disabled={saving || !draft}
-            className="fuel-btn fuel-btn-primary"
-            style={{ padding: '12px 16px', fontWeight: 600, fontSize: 13 }}
-          >
-            {saving ? '…' : 'Log'}
-          </button>
-        </div>
-        {error && <div className="auth-error" style={{ marginTop: 10 }}>{error}</div>}
-      </div>
-
-      {stats && (
-        <div className="fuel-card">
-          <div className="fuel-label">Trend</div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 4 }}>
-            <div className="fuel-stat" style={{ fontSize: 36 }}>{stats.trended_today.toFixed(1)}</div>
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-              lbs (raw {stats.raw_today.toFixed(1)})
-            </div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 14 }}>
-            <Stat label="Last 7 days" value={stats.week_change == null ? '—' : `${stats.week_change > 0 ? '+' : ''}${stats.week_change.toFixed(1)} lbs`} />
-            <Stat label="Rate" value={stats.rate_lbs_per_week == null ? '—' : `${stats.rate_lbs_per_week > 0 ? '+' : ''}${stats.rate_lbs_per_week.toFixed(2)} lb/wk`} />
-            <Stat label="Since start" value={`${stats.total_change > 0 ? '+' : ''}${stats.total_change.toFixed(1)} lbs`} />
-          </div>
-        </div>
-      )}
-
-      {!loading && entries.length > 0 && <WeightChart entries={entries} goalWeight={goalWeight} />}
-      {!loading && entries.length === 0 && (
-        <div className="empty">
-          <div className="empty-title">No weight history yet.</div>
-          Log a weight above. After 14 days the algorithm starts back-solving your TDEE.
-        </div>
-      )}
-    </div>
-  );
+  return (plan || [])
+    .filter((s) => s.date === today && s.mealId)
+    .map((s) => {
+      const meal = MEALS_BY_ID[s.mealId] || customById[s.mealId];
+      if (!meal) return null;
+      const ingredients = INGREDIENTS_DATA[s.mealId] || meal.ingredients || [];
+      const sides = [s.side, s.side2, s.side3]
+        .filter(Boolean)
+        .map((sid) => {
+          const side = SIDES_BY_ID[sid] || customById[sid];
+          if (!side) return null;
+          return { name: side.name, ingredients: side.ingredients || [] };
+        })
+        .filter(Boolean);
+      return {
+        mealTime: s.mealTime,
+        mealId: s.mealId,
+        name: meal.name,
+        cuisine: meal.cuisine,
+        servings: meal.servings,
+        ingredients,
+        sides,
+        notes: s.notes || null,
+      };
+    })
+    .filter(Boolean);
 }
 
-function Stat({ label, value }) {
-  return (
-    <div>
-      <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>{label}</div>
-      <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{value}</div>
-    </div>
-  );
+/** Maps meal planner mealTime ("Breakfast"/"Lunch"/"Dinner") to FUEL meal slots. */
+export function plannerSlotToFuelSlot(mealTime) {
+  // Direct match for the three meals; snacks aren't in the planner.
+  return mealTime;
 }
-function TrendsScreen({ settings, onOpenReview }) {
-  const [days, setDays] = useState([]);
-  const [reviews, setReviews] = useState([]);
-  const [loading, setLoading] = useState(true);
 
-  const algo = settings?.algo_state || {};
-  const phase = algo.phase || 'cutting';
-  const tdee = algo.tdee_estimate || 0;
-  const dietBreak = checkDietBreakNeeded(phase, algo.phase_start_date);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      // Pull last 30 days of daily kcal totals
-      const today = new Date();
-      const out = [];
-      for (let i = 29; i >= 0; i--) {
-        const d = new Date(today);
-        d.setDate(today.getDate() - i);
-        const iso = d.toISOString().slice(0, 10);
-        const r = await getDayEntries(iso);
-        const kcal = r.ok ? r.entries.reduce((s, e) => s + (e.kcal || 0), 0) : 0;
-        out.push({ date: iso, kcal });
-      }
-      if (cancelled) return;
-      setDays(out);
-      const rr = await getRecentReviews(8);
-      if (!cancelled && rr.ok) setReviews(rr.reviews);
-      setLoading(false);
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  if (loading) return <div className="empty">Loading…</div>;
-
-  const totalLogged = days.filter((d) => d.kcal > 0).length;
-  const avgKcal = totalLogged > 0 ? Math.round(days.reduce((s, d) => s + d.kcal, 0) / totalLogged) : 0;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="fuel-page-title">Trends</div>
-
-      <div className="fuel-card">
-        <div className="fuel-label">Algorithm status</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 10, marginTop: 10 }}>
-          <Stat label="TDEE estimate" value={tdee ? `${tdee.toLocaleString()} kcal` : '—'} />
-          <Stat label="Phase" value={phase.replace('_', ' ')} />
-          <Stat label="Days in phase" value={dietBreak.weeks ? `${dietBreak.weeks * 7} d (${dietBreak.weeks} wk)` : '—'} />
-          <Stat label="Last review" value={algo.last_review_date || 'never'} />
-        </div>
-        <button onClick={onOpenReview} className="fuel-btn fuel-btn-primary" style={{ marginTop: 14, padding: '10px 14px', fontSize: 13 }}>
-          Run weekly review now
-        </button>
-      </div>
-
-      {dietBreak.needed && (
-        <div className="fuel-card" style={{ borderColor: 'rgba(245,158,11,0.32)', background: 'var(--warn-fill)' }}>
-          <div className="fuel-label" style={{ color: 'var(--warn)' }}>Diet break recommended</div>
-          <div style={{ marginTop: 8, fontSize: 14, lineHeight: 1.5 }}>{dietBreak.message}</div>
-        </div>
-      )}
-
-      <div className="fuel-card">
-        <div className="fuel-label">Energy balance — last 30 days</div>
-        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)' }}>
-          {totalLogged} days logged · avg {avgKcal.toLocaleString()} kcal on logged days
-        </div>
-      </div>
-      <EnergyBalanceChart days={days} tdee={tdee} />
-
-      {reviews.length > 0 && (
-        <div className="fuel-card">
-          <div className="fuel-label" style={{ marginBottom: 8 }}>Recent reviews</div>
-          {reviews.map((r) => (
-            <div key={r.id} style={{ borderTop: '1px solid rgba(255,255,255,0.04)', padding: '10px 0', fontSize: 13, lineHeight: 1.45 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                {new Date(r.review_date + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-              </div>
-              <div style={{ marginTop: 4, color: 'var(--text-secondary)' }}>{r.reasoning}</div>
-              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-tertiary)' }}>
-                TDEE {Math.round(r.prior_tdee || 0)} → {Math.round(r.estimated_tdee || 0)} ·
-                training {Math.round(r.prior_training_kcal || 0)} → {Math.round(r.new_training_kcal || 0)}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Settings (kept from Phase 1, plus a pass-through for HeightInput)
+// Phase C — per-ingredient macros + per-serving math
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Each meal in the planner declares total ingredient quantities for the full
+// recipe (e.g. "3 cups oats", servings: 12). David eats ONE serving at a time,
+// so we divide by servings when logging from the planned card.
+//
+// resolveIngredientMacros({n, q, u}, servings) returns macros for ONE serving.
+// The resolved.json bundles a USDA fdcId + per100g + a portion {label, grams}
+// that matched the planner unit at pre-curation time.
 
-function SettingsScreen({ onSignOut, settings, missingTable, onSettingsSaved }) {
-  const [profile, setProfile] = useState(settings?.profile || DEFAULT_PROFILE);
-  const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState(null);
-
-  // If settings arrive later, hydrate
-  useEffect(() => {
-    if (settings?.profile) setProfile(settings.profile);
-  }, [settings]);
-
-  const onChange = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
-
-  const onSave = async () => {
-    setSaving(true);
-    const r = await saveSettings({ profile });
-    setSaving(false);
-    if (r.ok) {
-      setSavedAt(new Date());
-      onSettingsSaved?.({ ...(settings || {}), profile });
-    } else {
-      alert('Save failed: ' + (r.error?.message || 'unknown'));
-    }
-  };
-
-  if (missingTable) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div className="fuel-page-title">Settings</div>
-        <MissingTableCard />
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="fuel-page-title">Settings</div>
-      <div className="fuel-card">
-        <div className="fuel-label" style={{ marginBottom: 8 }}>Profile</div>
-        <SettingRow>
-          <Field label="Weight (lbs)" value={profile.weight_lbs} onChange={(v) => onChange('weight_lbs', Number(v))} type="number" />
-          <HeightInput totalInches={profile.height_in} onChange={(v) => onChange('height_in', v)} />
-        </SettingRow>
-        <SettingRow>
-          <Field label="Age" value={profile.age} onChange={(v) => onChange('age', Number(v))} type="number" />
-          <Field label="Sex" value={profile.sex} onChange={(v) => onChange('sex', v)} options={['male','female']} />
-        </SettingRow>
-        <SettingRow>
-          <Field label="Goal" value={profile.goal} onChange={(v) => onChange('goal', v)} options={['cut','maintain','gain']} />
-          <Field label="Training days/wk" value={profile.training_days_per_week} onChange={(v) => onChange('training_days_per_week', Number(v))} type="number" />
-        </SettingRow>
-        <SettingRow>
-          <Field label="Goal rate (% bw/wk)" value={profile.target_rate_pct} onChange={(v) => onChange('target_rate_pct', Number(v))} type="number" step="0.05" />
-          <Field label="Activity level" value={profile.activity_level} onChange={(v) => onChange('activity_level', v)} options={['sedentary','light','moderate','very','extreme']} />
-        </SettingRow>
-        <button className="fuel-btn fuel-btn-primary" onClick={onSave} disabled={saving} style={{ marginTop: 8 }}>
-          {saving ? 'Saving…' : 'Save profile'}
-        </button>
-        {savedAt && (
-          <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--accent)' }}>
-            Saved {savedAt.toLocaleTimeString()}
-          </span>
-        )}
-      </div>
-      <button className="fuel-btn fuel-btn-ghost" onClick={onSignOut}>Sign out</button>
-    </div>
-  );
-}
-
-function SettingRow({ children }) {
-  return <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>{children}</div>;
-}
-
-function HeightInput({ totalInches, onChange }) {
-  const safe = Number.isFinite(totalInches) ? totalInches : 0;
-  const ft = Math.floor(safe / 12);
-  const inches = Math.round(safe - ft * 12);
-  const update = (newFt, newIn) => onChange(newFt * 12 + newIn);
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <span className="fuel-label">Height</span>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input
-            type="number" min="0" max="9" inputMode="numeric"
-            value={ft}
-            onChange={(e) => update(Math.max(0, Number(e.target.value || 0)), inches)}
-            style={{ ...fieldStyle, width: '100%' }}
-          />
-          <span style={{ color: 'var(--text-tertiary)', fontSize: 12, letterSpacing: '0.06em' }}>ft</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input
-            type="number" min="0" max="11" inputMode="numeric"
-            value={inches}
-            onChange={(e) => update(ft, Math.min(11, Math.max(0, Number(e.target.value || 0))))}
-            style={{ ...fieldStyle, width: '100%' }}
-          />
-          <span style={{ color: 'var(--text-tertiary)', fontSize: 12, letterSpacing: '0.06em' }}>in</span>
-        </div>
-      </div>
-    </label>
-  );
-}
-
-function Field({ label, value, onChange, type = 'text', options, step }) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <span className="fuel-label">{label}</span>
-      {options ? (
-        <select value={value} onChange={(e) => onChange(e.target.value)} style={fieldStyle}>
-          {options.map((o) => <option key={o} value={o}>{o}</option>)}
-        </select>
-      ) : (
-        <input
-          type={type}
-          value={value ?? ''}
-          step={step}
-          onChange={(e) => onChange(e.target.value)}
-          style={fieldStyle}
-        />
-      )}
-    </label>
-  );
-}
-
-const fieldStyle = {
-  background: 'var(--bg-elev-1)',
-  border: '1px solid var(--card-border)',
-  color: 'var(--text-primary)',
-  padding: '8px 10px',
-  borderRadius: 8,
-  fontSize: 14,
-  outline: 'none',
+const MASS_TO_GRAMS = {
+  g: 1, gram: 1, grams: 1, kg: 1000,
+  lb: 453.59237, lbs: 453.59237, pound: 453.59237, pounds: 453.59237,
+  oz: 28.3495, ounce: 28.3495, ounces: 28.3495,
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Bottom nav
-// ─────────────────────────────────────────────────────────────────────────────
+/** Total grams represented by qty × unit, given the resolved portion. */
+export function ingredientGrams(ing, resolved) {
+  const u = String(ing.u || '').toLowerCase().trim();
+  if (MASS_TO_GRAMS[u]) return Number(ing.q) * MASS_TO_GRAMS[u];
+  if (!resolved || !resolved.portion) return 0;
+  return Number(ing.q) * resolved.portion.grams;
+}
 
-function BottomNav({ activeTab, onTabChange }) {
-  return (
-    <nav className="fuel-nav">
-      {TABS.map((t) => (
-        <button
-          key={t.id}
-          className={`fuel-nav-item ${activeTab === t.id ? 'active' : ''}`}
-          onClick={() => onTabChange(t.id)}
-        >
-          <span className="fuel-nav-icon">{t.glyph}</span>
-          {t.label}
-        </button>
-      ))}
-    </nav>
-  );
+/** Per-SERVING macros for one ingredient. servings defaults to 1. */
+export function resolveIngredientMacros(ing, servings = 1) {
+  const resolved = RESOLVED[ing.n];
+  if (!resolved) {
+    return { resolved: false, name: ing.n, kcal: 0, protein_g: 0, fat_g: 0, carbs_g: 0, fiber_g: 0, sodium_mg: 0, grams: 0 };
+  }
+  const totalGrams = ingredientGrams(ing, resolved);
+  const perServingGrams = servings > 0 ? totalGrams / servings : totalGrams;
+  const f = perServingGrams / 100;
+  const p = resolved.per100g;
+  return {
+    resolved: true,
+    fdcId: resolved.fdcId,
+    name: resolved.name,
+    grams: perServingGrams,
+    kcal: round1(p.kcal * f),
+    protein_g: round1(p.protein_g * f),
+    fat_g: round1(p.fat_g * f),
+    carbs_g: round1(p.carbs_g * f),
+    fiber_g: round1((p.fiber_g || 0) * f),
+    sodium_mg: round1((p.sodium_mg || 0) * f),
+    portion: resolved.portion,
+  };
+}
+
+/** Per-SERVING macros summed across every ingredient + side ingredient. */
+export function slotTotalMacros(slot) {
+  const servings = slot.servings || 1;
+  const totals = { kcal: 0, protein_g: 0, fat_g: 0, carbs_g: 0, fiber_g: 0, sodium_mg: 0, unresolved: 0 };
+  const all = [...(slot.ingredients || [])];
+  for (const side of slot.sides || []) for (const i of side.ingredients || []) all.push(i);
+  for (const ing of all) {
+    const m = resolveIngredientMacros(ing, servings);
+    if (!m.resolved) { totals.unresolved++; continue; }
+    totals.kcal += m.kcal;
+    totals.protein_g += m.protein_g;
+    totals.fat_g += m.fat_g;
+    totals.carbs_g += m.carbs_g;
+    totals.fiber_g += m.fiber_g;
+    totals.sodium_mg += m.sodium_mg;
+  }
+  totals.kcal = Math.round(totals.kcal);
+  totals.protein_g = round1(totals.protein_g);
+  totals.fat_g = round1(totals.fat_g);
+  totals.carbs_g = round1(totals.carbs_g);
+  return totals;
+}
+
+function round1(n) {
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 10) / 10;
+}
+
+/** Build food_log entry rows from a planned slot — one row per ingredient,
+ *  scaled to one serving. */
+export function buildLogEntriesForSlot(slot, dateIso, mealSlotName) {
+  const servings = slot.servings || 1;
+  const rows = [];
+  const all = [...(slot.ingredients || [])];
+  for (const side of slot.sides || []) for (const i of side.ingredients || []) all.push(i);
+  for (const ing of all) {
+    const m = resolveIngredientMacros(ing, servings);
+    if (!m.resolved) continue;
+    rows.push({
+      date: dateIso,
+      meal_slot: mealSlotName,
+      food_name: m.name,
+      serving_qty: round1((ing.q || 0) / servings),
+      serving_unit: `${ing.u || 'serving'} (${Math.round(m.grams)} g)`,
+      kcal: m.kcal,
+      protein_g: m.protein_g,
+      carbs_g: m.carbs_g,
+      fat_g: m.fat_g,
+      fiber_g: m.fiber_g,
+      sodium_mg: m.sodium_mg,
+      source: 'meal_planner',
+      source_id: String(m.fdcId),
+    });
+  }
+  return rows;
 }
