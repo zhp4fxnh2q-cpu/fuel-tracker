@@ -87,7 +87,7 @@ export default function FuelTracker({ session, onSignOut }) {
   return (
     <div className="fuel-app">
       <main className="fuel-page">
-        <Header session={session} onSignOut={onSignOut} />
+        <Header session={session} onSignOut={onSignOut} settings={settings} />
         {missingTable && <MissingTableCard />}
         {!missingTable && activeTab === 'today' && (
           <TodayScreen
@@ -170,20 +170,30 @@ export default function FuelTracker({ session, onSignOut }) {
 // Header
 // ─────────────────────────────────────────────────────────────────────────────
 
-function Header({ session, onSignOut }) {
+function Header({ session, onSignOut, settings }) {
   const dateLabel = useMemo(() => {
     return new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
   }, []);
+  const profile = settings?.profile;
+  const goal = profile?.goal;
+  const presetKey = settings?.preferences?.macro_preset || 'balanced';
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 12, marginBottom: 16 }}>
-      <div>
+    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', paddingTop: 12, marginBottom: 16, gap: 12 }}>
+      <div style={{ minWidth: 0 }}>
         <div className="fuel-page-title">{dateLabel}</div>
         <div className="fuel-mark" style={{ fontSize: 28, marginTop: 2 }}>FUEL</div>
+        {profile && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+            {goal && <span className="fuel-chip">{goal.toUpperCase()}</span>}
+            <span className="fuel-chip">{presetKey.replace('_',' ').toUpperCase()}</span>
+            <span className="fuel-chip-muted">{profile.weight_lbs} lb</span>
+          </div>
+        )}
       </div>
       <button
         onClick={onSignOut}
         className="fuel-btn fuel-btn-ghost"
-        style={{ fontSize: 11, padding: '6px 10px', letterSpacing: '0.08em' }}
+        style={{ fontSize: 11, padding: '6px 10px', letterSpacing: '0.08em', flexShrink: 0 }}
         title={session?.user?.email || ''}
       >
         SIGN OUT
@@ -244,7 +254,9 @@ function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelet
         <MacroCard label="Fat" current={totals.fat_g} target={fatTarget} unit="g" floor />
       </div>
 
-      {loading && <div className="empty">Loading today…</div>}
+      {loading && entries.length === 0 && (
+        <div style={{ padding: 16, color: 'var(--text-tertiary)', fontSize: 12, textAlign: 'center' }}>Loading today…</div>
+      )}
 
       {!loading && prefs.meal_slots.map((slot) => (
         <MealSection
@@ -767,8 +779,10 @@ function BottomNav({ activeTab, onTabChange }) {
           className={`fuel-nav-item ${activeTab === t.id ? 'active' : ''}`}
           onClick={() => onTabChange(t.id)}
         >
-          <span className="fuel-nav-icon">{t.glyph}</span>
-          {t.label}
+          <svg className="fuel-nav-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d={t.icon} />
+          </svg>
+          <span>{t.label}</span>
         </button>
       ))}
     </nav>

@@ -71,13 +71,15 @@ export const DEFAULT_PREFERENCES = {
   custom_macros: { protein_g: null, fat_g: null, carbs_g: null }, // used when macro_preset='custom'
 };
 
-// Tab definitions for bottom nav
+// Tab definitions for bottom nav. icon = an SVG <path d="..." /> drawn at
+// 24x24 viewBox. Outlined / stroked icons, not filled — matches the dark
+// theme and accent color.
 export const TABS = [
-  { id: 'today', label: 'Today', glyph: 'TD' },
-  { id: 'log', label: 'Log', glyph: 'LG' },
-  { id: 'weight', label: 'Weight', glyph: 'WT' },
-  { id: 'trends', label: 'Trends', glyph: 'TR' },
-  { id: 'settings', label: 'Settings', glyph: 'ST' },
+  { id: 'today', label: 'Today', icon: 'M3 12L12 4l9 8M5 10v10h14V10' },
+  { id: 'log', label: 'Log', icon: 'M12 5v14M5 12h14' },
+  { id: 'weight', label: 'Weight', icon: 'M5 7h14l-1.5 13a2 2 0 0 1-2 1.8h-7a2 2 0 0 1-2-1.8L5 7zM8 7V5a4 4 0 0 1 8 0v2M9 12h6' },
+  { id: 'trends', label: 'Trends', icon: 'M3 17l6-6 4 4 7-8M14 7h6v6' },
+  { id: 'settings', label: 'Settings', icon: 'M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM19.4 13.5l1.6 1.2-2 3.4-1.8-.7a7.6 7.6 0 0 1-2.5 1.5l-.3 2H10.6l-.3-2a7.6 7.6 0 0 1-2.5-1.5l-1.8.7-2-3.4 1.6-1.2A7.6 7.6 0 0 1 5.5 12c0-.5 0-1 .1-1.5L4 9.3l2-3.4 1.8.7A7.6 7.6 0 0 1 10.3 5l.3-2h2.8l.3 2c.9.3 1.7.8 2.5 1.5l1.8-.7 2 3.4-1.6 1.2c.1.5.1 1 .1 1.5s0 1-.1 1.5z' },
 ];
 
 
