@@ -247,7 +247,15 @@ function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelet
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div className="fuel-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 16px', backgroundImage: 'radial-gradient(ellipse at center, rgba(52,211,153,0.10), transparent 70%), var(--card-bg)' }}>
-        <CalorieRing current={totals.kcal} target={dayTarget} />
+        <CalorieRing
+          current={totals.kcal}
+          target={dayTarget}
+          macros={{
+            protein: { current: totals.protein_g, target: proteinTarget },
+            carbs:   { current: totals.carbs_g,   target: carbsTarget   },
+            fat:     { current: totals.fat_g,     target: fatTarget     },
+          }}
+        />
         <div style={{ marginTop: 6, fontSize: 11, letterSpacing: '0.12em', color: 'var(--text-tertiary)' }}>
           TRAINING DAY · {Math.round(targets.training_kcal ?? 2650).toLocaleString()} TARGET
         </div>
@@ -256,11 +264,7 @@ function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelet
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-        <MacroCard label="Protein" current={totals.protein_g} target={proteinTarget} unit="g" floor />
-        <MacroCard label="Carbs" current={totals.carbs_g} target={carbsTarget} unit="g" />
-        <MacroCard label="Fat" current={totals.fat_g} target={fatTarget} unit="g" floor />
-      </div>
+
 
 
 
