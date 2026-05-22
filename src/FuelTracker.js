@@ -21,6 +21,7 @@ import { fetchMealPlannerRow, resolveTodaysSlots } from './lib/mealPlanner';
 import AddFoodSheet from './components/AddFoodSheet';
 import PotTracker from './components/PotTracker';
 import PlannedMealBlock from './components/PlannedMealBlock';
+import DescribeMealSheet from './components/DescribeMealSheet';
 
 export default function FuelTracker({ session, onSignOut }) {
   const [activeTab, setActiveTab] = useState('today');
@@ -32,6 +33,8 @@ export default function FuelTracker({ session, onSignOut }) {
   const [addOpen, setAddOpen] = useState(false);
   const [potOpen, setPotOpen] = useState(false);
   const [potSlot, setPotSlot] = useState('Lunch');
+  const [describeOpen, setDescribeOpen] = useState(false);
+  const [describeSlot, setDescribeSlot] = useState('Lunch');
   const [addSlot, setAddSlot] = useState('Breakfast');
   const [addPrefill, setAddPrefill] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -94,6 +97,7 @@ export default function FuelTracker({ session, onSignOut }) {
             planSlots={planSlots}
             onAddFood={onAddFood}
             onOpenPot={(slot) => { setPotSlot(slot || 'Lunch'); setPotOpen(true); }}
+            onOpenDescribe={(slot) => { setDescribeSlot(slot || 'Lunch'); setDescribeOpen(true); }}
             onDelete={async (id) => {
               await deleteEntry(id);
               refreshDay();
@@ -145,6 +149,12 @@ export default function FuelTracker({ session, onSignOut }) {
         mealSlot={potSlot}
         onClose={() => setPotOpen(false)}
         onLogged={() => { setPotOpen(false); refreshDay(); }}
+      />
+      <DescribeMealSheet
+        open={describeOpen}
+        mealSlot={describeSlot}
+        onClose={() => setDescribeOpen(false)}
+        onLogged={() => { setDescribeOpen(false); refreshDay(); }}
       />
       <WeeklyReviewModal
         open={reviewOpen}
@@ -198,7 +208,7 @@ function MissingTableCard() {
 // Today (live)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelete, onToggleFavorite, onAfterLogAll, onOpenPot }) {
+function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelete, onToggleFavorite, onAfterLogAll, onOpenPot, onOpenDescribe }) {
   const profile = settings?.profile || DEFAULT_PROFILE;
   const targets = settings?.targets || DEFAULT_TARGETS;
   const prefs = settings?.preferences || DEFAULT_PREFERENCES;
@@ -252,13 +262,22 @@ function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelet
       ))}
 
       {!loading && (
-        <button
-          onClick={() => onOpenPot && onOpenPot('Lunch')}
-          className="fuel-btn"
-          style={{ marginTop: 8, padding: '12px', fontSize: 13, justifyContent: 'center' }}
-        >
-          Bowl from whole pot
-        </button>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
+          <button
+            onClick={() => onOpenDescribe && onOpenDescribe('Lunch')}
+            className="fuel-btn"
+            style={{ padding: '12px', fontSize: 13, justifyContent: 'center' }}
+          >
+            Describe a meal
+          </button>
+          <button
+            onClick={() => onOpenPot && onOpenPot('Lunch')}
+            className="fuel-btn"
+            style={{ padding: '12px', fontSize: 13, justifyContent: 'center' }}
+          >
+            Bowl from whole pot
+          </button>
+        </div>
       )}
 
       {!loading && entries.length === 0 && (
