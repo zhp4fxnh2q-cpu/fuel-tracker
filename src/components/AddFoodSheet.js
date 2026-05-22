@@ -9,7 +9,7 @@
  *   3) "Log" → insert into fuel_food_log → onLogged(entry) → parent refreshes
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { searchUsda, getUsdaFood, macrosAtGrams, detailFromSearchHit, lookupBarcode } from '../lib/usda';
+import { searchUsda, getUsdaFood, macrosAtGrams, detailFromSearchHit, lookupBarcode, pickDefaultPortionIdx } from '../lib/usda';
 import { getRecentFoods, per100gFromEntry, entryGrams } from '../lib/foodLog';
 import BarcodeScanner from './BarcodeScanner';
 import { getSavedMeals, logSavedMeal, deleteSavedMeal } from '../lib/savedMeals';
@@ -124,7 +124,7 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
     try {
       const detail = await getUsdaFood(hit.fdcId);
       setFoodDetail(detail);
-      setPortionIdx(detail.portions.length > 2 ? 2 : 0); // prefer first natural portion
+      setPortionIdx(pickDefaultPortionIdx(detail.portions));
       setAmount(1);
     } catch (e) {
       // USDA's /food/{fdcId} 404s on some Foundation entries even though search
@@ -235,7 +235,7 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
                     ref={inputRef}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Search USDA \u2014 eggs, chicken breast, oatmeal\u2026"
+                    placeholder="Search USDA — eggs, chicken breast, oatmeal…"
                     style={{ ...searchInputStyle, flex: 1 }}
                   />
                   <button
@@ -243,13 +243,13 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
                     title="Scan barcode"
                     style={scanBtnStyle}
                   >
-                    \ud83d\udcf7
+                    📷
                   </button>
                 </div>
 
                 <div style={listScrollStyle}>
                   {error && <div style={errorBoxStyle}>{error}</div>}
-                  {searching && <div style={hintStyle}>Searching\u2026</div>}
+                  {searching && <div style={hintStyle}>Searching…</div>}
                   {!searching && query.trim().length >= 2 && results.length === 0 && !error && (
                     <div style={hintStyle}>No matches. Try a different term.</div>
                   )}
@@ -262,11 +262,11 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
                         <div style={hitNameStyle}>{hit.name}</div>
                         <div style={hitMetaStyle}>
                           <span style={dataTypeBadge(hit.dataType)}>{hit.dataType}</span>
-                          {hit.brand && <span> \u00b7 {hit.brand}</span>}
-                          <span> \u00b7 {Math.round(hit.per100g.kcal || 0)} kcal \u00b7 {Math.round(hit.per100g.protein_g || 0)}g P / 100g</span>
+                          {hit.brand && <span> · {hit.brand}</span>}
+                          <span> · {Math.round(hit.per100g.kcal || 0)} kcal · {Math.round(hit.per100g.protein_g || 0)}g P / 100g</span>
                         </div>
                       </div>
-                      <span style={{ color: 'var(--text-tertiary)', fontSize: 18 }}>\u203a</span>
+                      <span style={{ color: 'var(--text-tertiary)', fontSize: 18 }}>›</span>
                     </button>
                   ))}
                 </div>
@@ -580,7 +580,7 @@ const scanBtnStyle = {
 function SavedMealsList({ meals, loading, mealSlot, onLog, onDelete }) {
   return (
     <div style={listScrollStyle}>
-      {loading && <div style={hintStyle}>Loading\u2026</div>}
+      {loading && <div style={hintStyle}>Loading…</div>}
       {!loading && meals.length === 0 && (
         <div style={hintStyle}>
           No saved meals yet. After you log a meal slot, tap "SAVE" on its header to snapshot it for one-tap reuse.
@@ -593,18 +593,18 @@ function SavedMealsList({ meals, loading, mealSlot, onLog, onDelete }) {
               <div style={hitNameStyle}>{m.name}</div>
               <div style={hitMetaStyle}>
                 <span>{(m.ingredients || []).length} item{(m.ingredients||[]).length === 1 ? '' : 's'}</span>
-                <span> \u00b7 {Math.round(m.total_kcal)} kcal</span>
-                <span> \u00b7 {Math.round(m.total_protein_g)}g P</span>
-                {m.last_used_at && <span> \u00b7 last used {new Date(m.last_used_at).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</span>}
+                <span> · {Math.round(m.total_kcal)} kcal</span>
+                <span> · {Math.round(m.total_protein_g)}g P</span>
+                {m.last_used_at && <span> · last used {new Date(m.last_used_at).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</span>}
               </div>
             </div>
-            <span style={{ color: 'var(--accent-bright)', fontSize: 11, letterSpacing: '0.06em' }}>LOG \u2192 {mealSlot.toUpperCase()}</span>
+            <span style={{ color: 'var(--accent-bright)', fontSize: 11, letterSpacing: '0.06em' }}>LOG → {mealSlot.toUpperCase()}</span>
           </button>
           <button
             onClick={() => onDelete(m.id)}
             style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
             title="Delete"
-          >\u00d7</button>
+          >×</button>
         </div>
       ))}
     </div>
@@ -617,7 +617,7 @@ function RecentList({ recents, loading, tab, favorites, onPick, onSwitchToUsda }
     : recents;
   return (
     <div style={listScrollStyle}>
-      {loading && <div style={hintStyle}>Loading\u2026</div>}
+      {loading && <div style={hintStyle}>Loading…</div>}
       {!loading && filtered.length === 0 && tab === 'recent' && (
         <div style={hintStyle}>
           Nothing logged yet. <button onClick={onSwitchToUsda} style={{ background: 'transparent', border: 'none', color: 'var(--accent-bright)', cursor: 'pointer', textDecoration: 'underline', fontSize: 13, padding: 0 }}>Search USDA</button> to add your first food.
@@ -631,12 +631,12 @@ function RecentList({ recents, loading, tab, favorites, onPick, onSwitchToUsda }
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={hitNameStyle}>{e.food_name}</div>
             <div style={hitMetaStyle}>
-              <span>{e.serving_qty} \u00d7 {e.serving_unit}</span>
-              <span> \u00b7 {Math.round(e.kcal)} kcal</span>
-              <span> \u00b7 {Math.round(e.protein_g)}g P</span>
+              <span>{e.serving_qty} × {e.serving_unit}</span>
+              <span> · {Math.round(e.kcal)} kcal</span>
+              <span> · {Math.round(e.protein_g)}g P</span>
             </div>
           </div>
-          <span style={{ color: 'var(--text-tertiary)', fontSize: 18 }}>\u203a</span>
+          <span style={{ color: 'var(--text-tertiary)', fontSize: 18 }}>›</span>
         </button>
       ))}
     </div>

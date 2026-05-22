@@ -24,7 +24,7 @@ export default function CalorieRing({ current, target, size = 200, stroke = 14, 
           </defs>
           <circle
             cx={size / 2} cy={size / 2} r={radius}
-            stroke="rgba(255,255,255,0.06)" strokeWidth={stroke} fill="none"
+            stroke="rgba(255,255,255,0.14)" strokeWidth={stroke} fill="none"
           />
           <circle
             cx={size / 2} cy={size / 2} r={radius}

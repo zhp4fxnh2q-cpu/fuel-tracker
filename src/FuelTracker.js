@@ -238,7 +238,7 @@ function MacroCard({ label, current, target, unit, floor }) {
   const remaining = Math.max(0, target - current);
   return (
     <div className="fuel-card" style={{ padding: 12 }}>
-      <div className="fuel-label">{label}{floor && <span style={{ color: 'var(--text-tertiary)', marginLeft: 4 }}>· floor</span>}</div>
+      <div className="fuel-label">{label}{floor && <span style={{ color: 'var(--text-tertiary)', marginLeft: 4 }}>· min {target}{unit}</span>}</div>
       <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4 }}>
         {Math.round(current)}
         <span style={{ color: 'var(--text-tertiary)', fontSize: 13, fontWeight: 400 }}>{` / ${target}${unit}`}</span>
@@ -262,7 +262,7 @@ function MealSection({ slot, items, onAdd, onAddPrefilled, onDelete, settings, o
           <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.04em' }}>{slot}</div>
           {items.length > 0 && (
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-              {items.length} item{items.length === 1 ? '' : 's'} \u00b7 {Math.round(slotKcal)} kcal
+              {items.length} item{items.length === 1 ? '' : 's'} · {Math.round(slotKcal)} kcal
             </div>
           )}
         </div>
@@ -270,7 +270,7 @@ function MealSection({ slot, items, onAdd, onAddPrefilled, onDelete, settings, o
           {items.length > 0 && (
             <button
               onClick={async () => {
-                const name = window.prompt(`Save these ${items.length} item${items.length === 1 ? '' : 's'} as a saved meal?\n\nName:`, slot === 'Breakfast' ? 'My usual breakfast' : `${slot} \u2014 ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
+                const name = window.prompt(`Save these ${items.length} item${items.length === 1 ? '' : 's'} as a saved meal?\n\nName:`, slot === 'Breakfast' ? 'My usual breakfast' : `${slot} — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
                 if (!name || !name.trim()) return;
                 const r = await saveMealApi({ name: name.trim(), entries: items });
                 if (!r.ok) alert('Save failed: ' + (r.error?.message || 'unknown'));
@@ -288,9 +288,9 @@ function MealSection({ slot, items, onAdd, onAddPrefilled, onDelete, settings, o
       {plan && (
         <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: 'rgba(52,211,153,0.04)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <span style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--accent-bright)', textTransform: 'uppercase', fontWeight: 600 }}>Tonight\u2019s plan</span>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>\u00b7 {plan.name}</span>
-            {plan.cuisine && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>\u00b7 {plan.cuisine}</span>}
+            <span style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--accent-bright)', textTransform: 'uppercase', fontWeight: 600 }}>Tonight’s plan</span>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>· {plan.name}</span>
+            {plan.cuisine && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>· {plan.cuisine}</span>}
           </div>
           {plan.notes && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, lineHeight: 1.4, fontStyle: 'italic' }}>{plan.notes}</div>}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -346,19 +346,19 @@ function MealSection({ slot, items, onAdd, onAddPrefilled, onDelete, settings, o
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.3 }}>{e.food_name}</div>
               <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-                {e.serving_qty} \u00d7 {e.serving_unit} \u00b7 {Math.round(e.kcal)} kcal \u00b7 {Math.round(e.protein_g)}g P \u00b7 {Math.round(e.carbs_g)}g C \u00b7 {Math.round(e.fat_g)}g F
+                {e.serving_qty} × {e.serving_unit} · {Math.round(e.kcal)} kcal · {Math.round(e.protein_g)}g P · {Math.round(e.carbs_g)}g C · {Math.round(e.fat_g)}g F
               </div>
             </div>
             <button
               onClick={() => onToggleFavorite(sig)}
               style={{ background: 'transparent', border: 'none', color: fav ? 'var(--accent-bright)' : 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
               title={fav ? 'Unfavorite' : 'Favorite'}
-            >{fav ? '\u2605' : '\u2606'}</button>
+            >{fav ? '★' : '☆'}</button>
             <button
               onClick={() => onDelete(e.id)}
               style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
               title="Remove"
-            >\u00d7</button>
+            >×</button>
           </div>
         );
       })}
@@ -460,7 +460,7 @@ function WeightScreen({ settings }) {
             className="fuel-btn fuel-btn-primary"
             style={{ padding: '12px 16px', fontWeight: 600, fontSize: 13 }}
           >
-            {saving ? '\u2026' : 'Log'}
+            {saving ? '…' : 'Log'}
           </button>
         </div>
         {error && <div className="auth-error" style={{ marginTop: 10 }}>{error}</div>}
@@ -476,8 +476,8 @@ function WeightScreen({ settings }) {
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 14 }}>
-            <Stat label="Last 7 days" value={stats.week_change == null ? '\u2014' : `${stats.week_change > 0 ? '+' : ''}${stats.week_change.toFixed(1)} lbs`} />
-            <Stat label="Rate" value={stats.rate_lbs_per_week == null ? '\u2014' : `${stats.rate_lbs_per_week > 0 ? '+' : ''}${stats.rate_lbs_per_week.toFixed(2)} lb/wk`} />
+            <Stat label="Last 7 days" value={stats.week_change == null ? '—' : `${stats.week_change > 0 ? '+' : ''}${stats.week_change.toFixed(1)} lbs`} />
+            <Stat label="Rate" value={stats.rate_lbs_per_week == null ? '—' : `${stats.rate_lbs_per_week > 0 ? '+' : ''}${stats.rate_lbs_per_week.toFixed(2)} lb/wk`} />
             <Stat label="Since start" value={`${stats.total_change > 0 ? '+' : ''}${stats.total_change.toFixed(1)} lbs`} />
           </div>
         </div>
@@ -535,7 +535,7 @@ function TrendsScreen({ settings, onOpenReview }) {
     return () => { cancelled = true; };
   }, []);
 
-  if (loading) return <div className="empty">Loading\u2026</div>;
+  if (loading) return <div className="empty">Loading…</div>;
 
   const totalLogged = days.filter((d) => d.kcal > 0).length;
   const avgKcal = totalLogged > 0 ? Math.round(days.reduce((s, d) => s + d.kcal, 0) / totalLogged) : 0;
@@ -547,9 +547,9 @@ function TrendsScreen({ settings, onOpenReview }) {
       <div className="fuel-card">
         <div className="fuel-label">Algorithm status</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 10, marginTop: 10 }}>
-          <Stat label="TDEE estimate" value={tdee ? `${tdee.toLocaleString()} kcal` : '\u2014'} />
+          <Stat label="TDEE estimate" value={tdee ? `${tdee.toLocaleString()} kcal` : '—'} />
           <Stat label="Phase" value={phase.replace('_', ' ')} />
-          <Stat label="Days in phase" value={dietBreak.weeks ? `${dietBreak.weeks * 7} d (${dietBreak.weeks} wk)` : '\u2014'} />
+          <Stat label="Days in phase" value={dietBreak.weeks ? `${dietBreak.weeks * 7} d (${dietBreak.weeks} wk)` : '—'} />
           <Stat label="Last review" value={algo.last_review_date || 'never'} />
         </div>
         <button onClick={onOpenReview} className="fuel-btn fuel-btn-primary" style={{ marginTop: 14, padding: '10px 14px', fontSize: 13 }}>
@@ -565,9 +565,9 @@ function TrendsScreen({ settings, onOpenReview }) {
       )}
 
       <div className="fuel-card">
-        <div className="fuel-label">Energy balance \u2014 last 30 days</div>
+        <div className="fuel-label">Energy balance — last 30 days</div>
         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)' }}>
-          {totalLogged} days logged \u00b7 avg {avgKcal.toLocaleString()} kcal on logged days
+          {totalLogged} days logged · avg {avgKcal.toLocaleString()} kcal on logged days
         </div>
       </div>
       <EnergyBalanceChart days={days} tdee={tdee} />
@@ -582,8 +582,8 @@ function TrendsScreen({ settings, onOpenReview }) {
               </div>
               <div style={{ marginTop: 4, color: 'var(--text-secondary)' }}>{r.reasoning}</div>
               <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-tertiary)' }}>
-                TDEE {Math.round(r.prior_tdee || 0)} \u2192 {Math.round(r.estimated_tdee || 0)} \u00b7
-                training {Math.round(r.prior_training_kcal || 0)} \u2192 {Math.round(r.new_training_kcal || 0)}
+                TDEE {Math.round(r.prior_tdee || 0)} → {Math.round(r.estimated_tdee || 0)} ·
+                training {Math.round(r.prior_training_kcal || 0)} → {Math.round(r.new_training_kcal || 0)}
               </div>
             </div>
           ))}

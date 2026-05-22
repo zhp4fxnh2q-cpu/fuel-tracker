@@ -26,9 +26,12 @@ const NUTRIENT_IDS = {
 };
 
 const DATATYPE_RANK = {
-  'SR Legacy': 0,
-  Foundation: 1,
-  'Survey (FNDDS)': 2,
+  // FNDDS first - it ships household portions ("1 large", "1 cup chopped")
+  // that the quantity picker depends on. SR Legacy + Foundation are still
+  // surfaced; they just sit behind FNDDS in the visible 20.
+  'Survey (FNDDS)': 0,
+  'SR Legacy': 1,
+  Foundation: 2,
   Branded: 3,
 };
 

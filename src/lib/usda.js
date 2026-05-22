@@ -78,3 +78,44 @@ export async function lookupBarcode(code) {
   }
   return await r.json();
 }
+
+
+/**
+ * Pick the right default portion index for a food's portion list.
+ *
+ * Portions array convention (built by functions/api/usda/food/[fdcId].js):
+ *   index 0:  universal fallback ("100 g")
+ *   index 1:  universal fallback ("1 oz (28 g)")
+ *   index 2+: natural household portions in USDA's order
+ *
+ * Strategy:
+ *  1. Prefer single-unit natural portions (no "cup"/"tbsp" multipliers).
+ *  2. If "large" is present without "extra", pick that (USDA's reference
+ *     size for many foods - egg, chicken breast, banana, etc.).
+ *  3. Otherwise pick the median-grams natural portion.
+ *  4. Fall back to index 0 ("100 g") if no natural portions exist.
+ */
+export function pickDefaultPortionIdx(portions) {
+  if (!Array.isArray(portions) || portions.length === 0) return 0;
+  if (portions.length <= 2) return 0;
+
+  const natural = portions.slice(2);
+  if (natural.length === 0) return 0;
+
+  const multiHints = /\b(cup|tbsp|tsp|tablespoon|teaspoon|fl\s*oz|fluid\s+ounce)\b/i;
+  const numericMultiHint = /\(\d+\.\d+\s+[a-z]/i;
+
+  const singleUnits = natural.filter((p) =>
+    !multiHints.test(p.label) && !numericMultiHint.test(p.label)
+  );
+  const pool = singleUnits.length > 0 ? singleUnits : natural;
+
+  const large = pool.find((p) =>
+    /\blarge\b/i.test(p.label) && !/\bextra\s+large\b/i.test(p.label)
+  );
+  if (large) return portions.indexOf(large);
+
+  const sorted = [...pool].sort((a, b) => a.grams - b.grams);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  return portions.indexOf(median);
+}
