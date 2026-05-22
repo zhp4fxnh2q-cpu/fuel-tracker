@@ -15,7 +15,8 @@ import { saveMeal as saveMealApi } from './lib/savedMeals';
 import WeeklyReviewModal from './components/WeeklyReviewModal';
 import EnergyBalanceChart from './components/EnergyBalanceChart';
 import { isReviewDue, getRecentReviews } from './lib/review';
-import { checkDietBreakNeeded } from './lib/algorithm';
+import { checkDietBreakNeeded, deriveMacroTargets } from './lib/algorithm';
+import { MACRO_PRESETS } from './lib/constants';
 import { fetchMealPlannerRow, resolveTodaysSlots, resolveIngredientMacros, slotTotalMacros, buildLogEntriesForSlot } from './lib/mealPlanner';
 import AddFoodSheet from './components/AddFoodSheet';
 
@@ -113,6 +114,14 @@ export default function FuelTracker({ session, onSignOut }) {
             onSignOut={onSignOut}
             settings={settings}
             missingTable={missingTable}
+            onPrefChange={async (key, value) => {
+              const next = {
+                ...(settings || {}),
+                preferences: { ...((settings || {}).preferences || {}), [key]: value },
+              };
+              const r = await saveSettings(next);
+              if (r.ok) setSettings(next);
+            }}
             onSettingsSaved={(s) => setSettings(s)}
           />
         )}
@@ -186,9 +195,12 @@ function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelet
   // Phase 3 simplification: assume training day (use training_kcal target).
   // Phase 6 will plug FORGE / training_day_overrides into this.
   const dayTarget = targets.training_kcal ?? 2650;
-  const proteinTarget = Math.round(profile.weight_lbs * (targets.protein_g_per_lb ?? 1));
-  const fatTarget = Math.round(profile.weight_lbs * (targets.fat_g_per_lb ?? 0.3));
-  const carbsTarget = Math.max(0, Math.round((dayTarget - proteinTarget * 4 - fatTarget * 9) / 4));
+  const macroPreset = prefs.macro_preset || 'balanced';
+  const customMacros = prefs.custom_macros || null;
+  const macros = deriveMacroTargets(macroPreset, dayTarget, profile.weight_lbs, customMacros);
+  const proteinTarget = macros.protein_g;
+  const fatTarget = macros.fat_g;
+  const carbsTarget = macros.carbs_g;
 
   const totals = sumDay(entries);
   const grouped = groupBySlot(entries, prefs.meal_slots);
@@ -199,6 +211,9 @@ function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelet
         <CalorieRing current={totals.kcal} target={dayTarget} />
         <div style={{ marginTop: 6, fontSize: 11, letterSpacing: '0.12em', color: 'var(--text-tertiary)' }}>
           TRAINING DAY · {Math.round(targets.training_kcal ?? 2650).toLocaleString()} TARGET
+        </div>
+        <div style={{ marginTop: 4, fontSize: 10, letterSpacing: '0.10em', color: 'var(--accent-bright)', textTransform: 'uppercase' }}>
+          {(MACRO_PRESETS[macroPreset] || MACRO_PRESETS.balanced).label}
         </div>
       </div>
 
@@ -644,7 +659,7 @@ function TrendsScreen({ settings, onOpenReview }) {
 // Settings (kept from Phase 1, plus a pass-through for HeightInput)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function SettingsScreen({ onSignOut, settings, missingTable, onSettingsSaved }) {
+function SettingsScreen({ onSignOut, settings, missingTable, onSettingsSaved, onPrefChange }) {
   const [profile, setProfile] = useState(settings?.profile || DEFAULT_PROFILE);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
@@ -693,6 +708,17 @@ function SettingsScreen({ onSignOut, settings, missingTable, onSettingsSaved }) 
         <SettingRow>
           <Field label="Goal" value={profile.goal} onChange={(v) => onChange('goal', v)} options={['cut','maintain','gain']} />
           <Field label="Training days/wk" value={profile.training_days_per_week} onChange={(v) => onChange('training_days_per_week', Number(v))} type="number" />
+        </SettingRow>
+        <SettingRow>
+          <Field
+            label="Macro preset"
+            value={settings?.preferences?.macro_preset || 'balanced'}
+            onChange={(v) => onPrefChange && onPrefChange('macro_preset', v)}
+            options={Object.keys(MACRO_PRESETS)}
+          />
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', alignSelf: 'end', lineHeight: 1.4 }}>
+            {(MACRO_PRESETS[settings?.preferences?.macro_preset || 'balanced'] || MACRO_PRESETS.balanced).description}
+          </div>
         </SettingRow>
         <SettingRow>
           <Field label="Goal rate (% bw/wk)" value={profile.target_rate_pct} onChange={(v) => onChange('target_rate_pct', Number(v))} type="number" step="0.05" />

@@ -67,6 +67,8 @@ export const DEFAULT_PREFERENCES = {
   theme: 'dark',
   units: 'imperial',
   intraday_rebalance: true,          // smart rebalance with floors (David's call)
+  macro_preset: 'balanced',          // balanced | low_carb | keto | custom
+  custom_macros: { protein_g: null, fat_g: null, carbs_g: null }, // used when macro_preset='custom'
 };
 
 // Tab definitions for bottom nav
@@ -77,3 +79,30 @@ export const TABS = [
   { id: 'trends', label: 'Trends', glyph: 'TR' },
   { id: 'settings', label: 'Settings', glyph: 'ST' },
 ];
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase H — macro presets
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Each preset reshapes protein/fat/carb targets while still hitting the
+// day's calorie target. See lib/algorithm.js deriveMacroTargets().
+
+export const MACRO_PRESETS = {
+  balanced: {
+    label: 'Balanced',
+    description: '1.0 g/lb protein, 0.3 g/lb fat, carbs fill the rest.',
+  },
+  low_carb: {
+    label: 'Low carb',
+    description: 'Carbs capped near 100 g; fat picks up the slack.',
+  },
+  keto: {
+    label: 'Keto',
+    description: 'Carbs ~30 g, fat ~70% of kcal, protein 0.8 g/lb.',
+  },
+  custom: {
+    label: 'Custom',
+    description: 'Set your own protein/fat/carb grams.',
+  },
+};

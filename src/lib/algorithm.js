@@ -394,3 +394,45 @@ function daysBetween(isoA, isoB) {
 function round1(n) {
   return Math.round(n * 10) / 10;
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase H — macro target derivation from preset
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Given a daily calorie target and a preset, return {protein_g, fat_g, carbs_g}.
+// Always respects the protein/fat floors that the algorithm uses elsewhere.
+// 'custom' uses the explicit grams in customMacros; missing fields fall back
+// to balanced rules so the user can edit one number at a time.
+
+export function deriveMacroTargets(preset, kcal, weight_lbs, customMacros = null) {
+  const P_per_lb_balanced = 1.0;
+  const F_per_lb_balanced = 0.3;
+
+  if (preset === 'keto') {
+    const protein_g = Math.round(weight_lbs * 0.8);
+    const carbs_g = 30;
+    const remaining = kcal - protein_g * 4 - carbs_g * 4;
+    const fat_g = Math.max(0, Math.round(remaining / 9));
+    return { protein_g, fat_g, carbs_g, source: 'keto' };
+  }
+  if (preset === 'low_carb') {
+    const protein_g = Math.round(weight_lbs * P_per_lb_balanced);
+    // Carbs at ~20% kcal but capped at 100 g
+    const carbs_g = Math.min(100, Math.round((kcal * 0.20) / 4));
+    const remaining = kcal - protein_g * 4 - carbs_g * 4;
+    const fat_g = Math.max(0, Math.round(remaining / 9));
+    return { protein_g, fat_g, carbs_g, source: 'low_carb' };
+  }
+  if (preset === 'custom' && customMacros) {
+    const protein_g = Number(customMacros.protein_g) || Math.round(weight_lbs * P_per_lb_balanced);
+    const fat_g = Number(customMacros.fat_g) || Math.round(weight_lbs * F_per_lb_balanced);
+    const carbs_g = Number(customMacros.carbs_g) || Math.max(0, Math.round((kcal - protein_g * 4 - fat_g * 9) / 4));
+    return { protein_g, fat_g, carbs_g, source: 'custom' };
+  }
+  // balanced (default)
+  const protein_g = Math.round(weight_lbs * P_per_lb_balanced);
+  const fat_g = Math.round(weight_lbs * F_per_lb_balanced);
+  const carbs_g = Math.max(0, Math.round((kcal - protein_g * 4 - fat_g * 9) / 4));
+  return { protein_g, fat_g, carbs_g, source: 'balanced' };
+}
