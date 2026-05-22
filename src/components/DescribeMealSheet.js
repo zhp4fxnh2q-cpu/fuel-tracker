@@ -5,7 +5,7 @@
  * Calls /api/llm/parse-meal then /api/usda/search per item for resolution.
  */
 import { useEffect, useRef, useState } from 'react';
-import { searchUsda, getUsdaFood, detailFromSearchHit, macrosAtGrams, pickDefaultPortionIdx } from '../lib/usda';
+import { searchUsda, getUsdaFood, detailFromSearchHit, macrosAtGrams } from '../lib/usda';
 import { addEntry, todayIso } from '../lib/foodLog';
 import { SOURCE } from '../lib/constants';
 
