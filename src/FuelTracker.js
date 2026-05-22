@@ -590,9 +590,38 @@ function TrendsScreen({ settings, onOpenReview }) {
   const totalLogged = days.filter((d) => d.kcal > 0).length;
   const avgKcal = totalLogged > 0 ? Math.round(days.reduce((s, d) => s + d.kcal, 0) / totalLogged) : 0;
 
+  const goal = settings?.profile?.goal || 'cut';
+  const presetKey = settings?.preferences?.macro_preset || 'balanced';
+  const weight = settings?.profile?.weight_lbs;
+  const phaseLabel = phase === 'cutting' ? 'CUTTING' : phase === 'maintenance' ? 'MAINTENANCE' : phase === 'diet_break' ? 'DIET BREAK' : phase === 'reverse' ? 'REVERSE' : phase.toUpperCase();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="fuel-page-title">Trends</div>
+      <div className="fuel-page-title">Coach</div>
+
+      {/* Hero phase banner */}
+      <div className="fuel-card" style={{ padding: 18, backgroundImage: 'radial-gradient(ellipse at top right, rgba(52,211,153,0.12), transparent 60%), var(--card-bg)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 10, letterSpacing: '0.12em', color: 'var(--accent-bright)', fontWeight: 600, textTransform: 'uppercase' }}>{phaseLabel}</div>
+            <div style={{ fontSize: 22, fontWeight: 600, marginTop: 4, lineHeight: 1.1 }}>
+              {tdee ? `${tdee.toLocaleString()} kcal/day` : 'No TDEE yet'}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
+              {tdee ? `Algorithm's 14-day TDEE estimate` : 'Log weights for 14 days to enable adaptive targets'}
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
+            <span className="fuel-chip">{goal.toUpperCase()}</span>
+            <span className="fuel-chip-muted">{presetKey.replace('_',' ').toUpperCase()}</span>
+            {weight && <span className="fuel-chip-muted">{weight} lb</span>}
+          </div>
+        </div>
+        {dietBreak.weeks > 0 && (
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.05)', fontSize: 11, color: 'var(--text-secondary)' }}>
+            Week {dietBreak.weeks} of phase · last review {algo.last_review_date || 'never'}
+          </div>
+        )}
+      </div>
 
       <div className="fuel-card">
         <div className="fuel-label">Algorithm status</div>
