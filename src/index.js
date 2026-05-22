@@ -1,3 +1,8 @@
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './index.css';
+import { registerServiceWorker } from './serviceWorkerRegistration';
 
 // Force every load through the canonical domain. Cloudflare Pages issues a
 // preview hash URL for every commit (e.g. abc12345.rdnafuel.pages.dev), and
@@ -12,15 +17,9 @@
       window.location.replace(target);
     }
   } catch (e) {
-    // best-effort — never block boot
+    // best-effort -- never block boot
   }
 })();
-
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App';
-import './index.css';
-import { registerServiceWorker } from './serviceWorkerRegistration';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
