@@ -79,7 +79,7 @@ export default function CalorieRing({ current, target, macros, size = 240 }) {
             of {Math.round(target).toLocaleString()}
           </div>
           <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 2, letterSpacing: '0.06em' }}>
-            {current >= target ? `OVER ${Math.round(current - target)}` : `${Math.round(remaining)} LEFT`}
+            {current >= target ? `OVER ${Math.round(current - target).toLocaleString()}` : `${Math.round(remaining).toLocaleString()} LEFT`}
           </div>
         </div>
       </div>
