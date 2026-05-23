@@ -14,6 +14,7 @@ import { getRecentFoods, per100gFromEntry, entryGrams } from '../lib/foodLog';
 import BarcodeScanner from './BarcodeScanner';
 import { getSavedMeals, logSavedMeal, deleteSavedMeal } from '../lib/savedMeals';
 import { fetchMealPlannerRow, resolveTodaysSlots, buildLogEntriesForSlot, resolveIngredientMacros } from '../lib/mealPlanner';
+import RecipeEditor from './RecipeEditor';
 import { addEntry, todayIso } from '../lib/foodLog';
 import { SOURCE } from '../lib/constants';
 
@@ -35,6 +36,7 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
   const [savedLoading, setSavedLoading] = useState(false);
   const [plannerSlots, setPlannerSlots] = useState([]);
   const [plannerLoading, setPlannerLoading] = useState(false);
+  const [editingMeal, setEditingMeal] = useState(null);
   const [step, setStep] = useState('search'); // 'search' | 'quantity'
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -370,6 +372,7 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
                   await deleteSavedMeal(id);
                   setSavedMeals(savedMeals.filter((m) => m.id !== id));
                 }}
+                onEdit={(m) => setEditingMeal(m)}
               />
             )}
 
@@ -413,6 +416,17 @@ export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogge
           />
         )}
       </div>
+    {editingMeal && (
+      <RecipeEditor
+        open={!!editingMeal}
+        meal={editingMeal}
+        onClose={() => setEditingMeal(null)}
+        onSaved={async () => {
+          const r = await getSavedMeals();
+          setSavedMeals(r.meals || []);
+        }}
+      />
+    )}
     {scannerOpen && (
       <BarcodeScanner
         open={scannerOpen}
@@ -666,7 +680,7 @@ const scanBtnStyle = {
   flexShrink: 0,
 };
 
-function SavedMealsList({ meals, loading, mealSlot, onLog, onDelete }) {
+function SavedMealsList({ meals, loading, mealSlot, onLog, onDelete, onEdit }) {
   return (
     <div style={listScrollStyle}>
       {loading && <div style={hintStyle}>Loading…</div>}
@@ -689,6 +703,11 @@ function SavedMealsList({ meals, loading, mealSlot, onLog, onDelete }) {
             </div>
             <span style={{ color: 'var(--accent-bright)', fontSize: 11, letterSpacing: '0.06em' }}>LOG → {mealSlot.toUpperCase()}</span>
           </button>
+          <button
+            onClick={() => onEdit && onEdit(m)}
+            style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--card-border)', color: 'var(--accent-bright)', fontSize: 10, padding: '4px 8px', borderRadius: 6, cursor: 'pointer', letterSpacing: '0.06em', fontWeight: 600 }}
+            title="Edit recipe"
+          >EDIT</button>
           <button
             onClick={() => onDelete(m.id)}
             style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', fontSize: 16, cursor: 'pointer', padding: 4 }}
