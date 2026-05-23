@@ -256,12 +256,6 @@ function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelet
             fat:     { current: totals.fat_g,     target: fatTarget     },
           }}
         />
-        <div style={{ marginTop: 6, fontSize: 11, letterSpacing: '0.12em', color: 'var(--text-tertiary)' }}>
-          TRAINING DAY · {Math.round(targets.training_kcal ?? 2650).toLocaleString()} TARGET
-        </div>
-        <div style={{ marginTop: 4, fontSize: 10, letterSpacing: '0.10em', color: 'var(--accent-bright)', textTransform: 'uppercase' }}>
-          {(MACRO_PRESETS[macroPreset] || MACRO_PRESETS.balanced).label}
-        </div>
       </div>
 
 
