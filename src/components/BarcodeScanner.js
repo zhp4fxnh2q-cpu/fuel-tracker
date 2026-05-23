@@ -1,158 +1,227 @@
 /**
- * BarcodeScanner — full-screen camera viewfinder using the native
- * BarcodeDetector API. When a barcode is detected it stops the camera
- * and calls onDetected(code).
+ * BarcodeScanner — camera-based barcode reader using ZXing (loaded from CDN
+ * at runtime so we don't bloat the main bundle).
  *
- * Browser support: Chrome/Edge desktop, Android Chrome, iOS Safari 17+,
- * macOS Safari 17+. Falls back to an error message if missing.
+ * Works on:
+ *   • iOS Safari 14+ (no native BarcodeDetector, ZXing does the decoding)
+ *   • Android Chrome
+ *   • Desktop Chrome / Edge / Safari
+ *
+ * Requires HTTPS (Cloudflare Pages is). Falls back to manual barcode entry
+ * if the camera permission is denied or ZXing fails to load.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-const FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39'];
+const ZXING_URL = 'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js';
+
+function loadZxing() {
+  if (window.ZXing) return Promise.resolve(window.ZXing);
+  if (window.__zxingLoading) return window.__zxingLoading;
+  window.__zxingLoading = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = ZXING_URL;
+    script.async = true;
+    script.onload = () => resolve(window.ZXing);
+    script.onerror = () => reject(new Error('Failed to load ZXing'));
+    document.head.appendChild(script);
+  });
+  return window.__zxingLoading;
+}
 
 export default function BarcodeScanner({ open, onClose, onDetected }) {
   const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  const detectorRef = useRef(null);
-  const rafRef = useRef(null);
+  const readerRef = useRef(null);
   const [error, setError] = useState(null);
-  const [supported, setSupported] = useState(true);
   const [hint, setHint] = useState('Point at a barcode');
+  const [manualCode, setManualCode] = useState('');
+  const [showManual, setShowManual] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
 
-    if (typeof window.BarcodeDetector === 'undefined') {
-      setSupported(false);
-      setError('Your browser does not support native barcode scanning. Update iOS to 17+ or Chrome to a recent version.');
-      return;
-    }
-
-    detectorRef.current = new window.BarcodeDetector({ formats: FORMATS });
-
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-          audio: false,
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
-        scan();
+        setHint('Loading scanner…');
+        const Z = await loadZxing();
+        if (cancelled) return;
+
+        setHint('Starting camera…');
+        const reader = new Z.BrowserMultiFormatReader();
+        readerRef.current = reader;
+
+        // Prefer rear camera on phones
+        const devices = await Z.BrowserCodeReader.listVideoInputDevices().catch(() => []);
+        const rear = devices.find((d) => /back|rear|environment/i.test(d.label || ''));
+        const deviceId = (rear || devices[0])?.deviceId;
+
+        await reader.decodeFromVideoDevice(
+          deviceId || null,
+          videoRef.current,
+          (result, err) => {
+            if (cancelled) return;
+            if (result) {
+              setHint('Detected');
+              try { reader.reset(); } catch (e) { /* noop */ }
+              onDetected?.(result.getText());
+            }
+            // Ignore per-frame errors — ZXing emits NotFoundException continuously
+          }
+        );
+        setHint('Point at a barcode');
       } catch (e) {
-        setError(`Camera unavailable: ${e.message}`);
+        if (cancelled) return;
+        const msg = String(e?.message || e);
+        if (/permission|denied|NotAllowed/i.test(msg)) {
+          setError('Camera permission denied. Enable camera access for this site in Safari settings.');
+        } else if (/NotFound|video|getUserMedia/i.test(msg)) {
+          setError('No camera available on this device.');
+        } else {
+          setError(`Scanner unavailable: ${msg}`);
+        }
+        setShowManual(true);
       }
     })();
 
     return () => {
       cancelled = true;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
+      try { readerRef.current?.reset(); } catch (e) { /* noop */ }
+      readerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, onDetected]);
 
-  const scan = async () => {
-    if (!videoRef.current || !detectorRef.current) return;
-    try {
-      const codes = await detectorRef.current.detect(videoRef.current);
-      if (codes && codes.length > 0) {
-        const code = codes[0].rawValue;
-        setHint(`Detected ${code} — looking up...`);
-        if (navigator.vibrate) navigator.vibrate(80);
-        if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-        onDetected(code);
-        return;
-      }
-    } catch (e) {
-      // per-frame errors are noisy — ignore
-    }
-    rafRef.current = requestAnimationFrame(scan);
+  const onManualSubmit = (e) => {
+    e.preventDefault();
+    const v = manualCode.trim();
+    if (v) onDetected?.(v);
   };
 
   if (!open) return null;
 
   return (
-    <div style={overlayStyle}>
-      <div style={topBarStyle}>
-        <button onClick={onClose} style={closeBtn}>×</button>
-        <div style={{ flex: 1, textAlign: 'center', fontSize: 13, color: '#cbd5e1' }}>{hint}</div>
-        <div style={{ width: 36 }} />
+    <div style={overlay}>
+      <div style={header}>
+        <button onClick={onClose} style={hbtn}>Cancel</button>
+        <div style={{ flex: 1, textAlign: 'center', fontSize: 14, color: 'var(--text-secondary)' }}>
+          Scan barcode
+        </div>
+        <button onClick={() => setShowManual((v) => !v)} style={hbtn}>
+          {showManual ? 'Camera' : 'Type it'}
+        </button>
       </div>
 
-      {supported && (
-        <div style={viewfinderWrap}>
-          <video ref={videoRef} autoPlay playsInline muted style={videoStyle} />
-          <div style={targetBoxStyle} />
+      {!showManual && (
+        <div style={{ position: 'relative', flex: 1, minHeight: 0, background: '#000' }}>
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            autoPlay
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+          <div style={frameStyle}>
+            <div style={cornerStyle('tl')} />
+            <div style={cornerStyle('tr')} />
+            <div style={cornerStyle('bl')} />
+            <div style={cornerStyle('br')} />
+          </div>
+          <div style={hintStyle}>{hint}</div>
         </div>
       )}
 
       {error && (
-        <div style={errorWrap}>
-          <div style={{ fontSize: 14, lineHeight: 1.4, marginBottom: 12 }}>{error}</div>
-          <button onClick={onClose} className="fuel-btn">Close</button>
-        </div>
+        <div style={errStyle}>{error}</div>
       )}
 
-      <div style={hintBarStyle}>
-        Hold steady ~6 inches from the barcode. The phone vibrates when it locks.
-      </div>
+      {showManual && (
+        <form onSubmit={onManualSubmit} style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 }}>
+            Type or paste the barcode (UPC/EAN). Found on the back of the package.
+          </div>
+          <input
+            type="text"
+            inputMode="numeric"
+            autoFocus
+            value={manualCode}
+            onChange={(e) => setManualCode(e.target.value)}
+            placeholder="012345678905"
+            style={{
+              width: '100%',
+              background: 'var(--bg-elev-2)',
+              border: '1px solid var(--card-border)',
+              color: 'var(--text-primary)',
+              padding: '12px 14px',
+              borderRadius: 10,
+              fontSize: 16,
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+          <button
+            type="submit"
+            disabled={!manualCode.trim()}
+            className="fuel-btn fuel-btn-primary"
+            style={{ width: '100%', marginTop: 12, padding: '12px', fontSize: 14 }}
+          >
+            Look up
+          </button>
+        </form>
+      )}
     </div>
   );
 }
 
-const overlayStyle = {
+const overlay = {
   position: 'fixed', inset: 0, zIndex: 300,
-  background: '#000',
+  background: 'rgba(0,0,0,0.92)',
   display: 'flex', flexDirection: 'column',
+  paddingTop: 'env(safe-area-inset-top, 0px)',
+  paddingBottom: 'env(safe-area-inset-bottom, 0px)',
 };
-const topBarStyle = {
-  display: 'flex', alignItems: 'center',
-  padding: 'calc(10px + env(safe-area-inset-top, 0px)) 14px 10px',
-  background: 'rgba(0,0,0,0.6)',
+
+const header = {
+  display: 'flex', alignItems: 'center', gap: 8,
+  padding: '12px 12px',
 };
-const closeBtn = {
-  width: 36, height: 36, borderRadius: '50%',
-  background: 'rgba(255,255,255,0.12)', border: 'none',
-  color: '#fff', fontSize: 22, fontWeight: 300,
+
+const hbtn = {
+  background: 'transparent', border: '1px solid var(--card-border)',
+  color: 'var(--text-primary)',
+  fontSize: 13, fontWeight: 500,
+  padding: '6px 12px', borderRadius: 8,
   cursor: 'pointer',
 };
-const viewfinderWrap = {
-  flex: 1, position: 'relative', overflow: 'hidden',
-  display: 'flex', alignItems: 'center', justifyContent: 'center',
-};
-const videoStyle = {
-  width: '100%', height: '100%', objectFit: 'cover',
-};
-const targetBoxStyle = {
+
+const frameStyle = {
   position: 'absolute',
-  width: '78%', maxWidth: 360, height: 180,
-  border: '2px solid #34d399',
-  borderRadius: 14,
-  boxShadow: '0 0 0 9999px rgba(0,0,0,0.45), 0 0 24px rgba(52,211,153,0.4) inset',
+  inset: '20% 12%',
   pointerEvents: 'none',
 };
-const hintBarStyle = {
-  padding: '12px 16px calc(12px + env(safe-area-inset-bottom, 0px))',
-  background: 'rgba(0,0,0,0.7)',
-  color: '#cbd5e1', fontSize: 12, textAlign: 'center', lineHeight: 1.4,
+
+function cornerStyle(corner) {
+  const base = {
+    position: 'absolute',
+    width: 28, height: 28,
+    borderColor: 'var(--accent-bright)',
+    borderStyle: 'solid',
+  };
+  if (corner === 'tl') return { ...base, top: 0, left: 0, borderWidth: '3px 0 0 3px' };
+  if (corner === 'tr') return { ...base, top: 0, right: 0, borderWidth: '3px 3px 0 0' };
+  if (corner === 'bl') return { ...base, bottom: 0, left: 0, borderWidth: '0 0 3px 3px' };
+  return { ...base, bottom: 0, right: 0, borderWidth: '0 3px 3px 0' };
+}
+
+const hintStyle = {
+  position: 'absolute', left: 0, right: 0, bottom: 16,
+  textAlign: 'center', color: 'var(--accent-bright)',
+  fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase',
+  textShadow: '0 0 8px rgba(0,0,0,0.6)',
 };
-const errorWrap = {
-  flex: 1, display: 'flex', flexDirection: 'column',
-  alignItems: 'center', justifyContent: 'center',
-  padding: 24, color: '#fda4af', textAlign: 'center',
+
+const errStyle = {
+  margin: '12px 16px', padding: '10px 12px',
+  background: 'var(--danger-fill)',
+  border: '1px solid rgba(239,68,68,0.32)',
+  color: 'var(--danger)',
+  borderRadius: 10, fontSize: 13,
 };

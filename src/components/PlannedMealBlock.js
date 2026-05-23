@@ -19,6 +19,7 @@ import {
   buildLogEntriesForSlot,
 } from '../lib/mealPlanner';
 import { addEntry, todayIso } from '../lib/foodLog';
+import { supabase, SHARED_USER_ID } from '../supabaseClient';
 
 export default function PlannedMealBlock({ plan, slot, onAddPrefilled, onAfterLogAll }) {
   // Local edit state — if non-null, supersedes plan.ingredients for display
@@ -30,6 +31,8 @@ export default function PlannedMealBlock({ plan, slot, onAddPrefilled, onAfterLo
   const [aiSummary, setAiSummary] = useState(null);
   const [logging, setLogging] = useState(false);
   const [logErr, setLogErr] = useState(null);
+  const [locking, setLocking] = useState(false);
+  const [lockMsg, setLockMsg] = useState(null);
 
   // Build the effective plan — possibly with overridden ingredients.
   const effectiveIngredients = editedIngredients || plan.ingredients;
@@ -90,6 +93,54 @@ export default function PlannedMealBlock({ plan, slot, onAddPrefilled, onAfterLo
       setAiErr(err.message || String(err));
     } finally {
       setAiBusy(false);
+    }
+  };
+
+  // Persist AI edits to the corresponding fuel_saved_meals row.
+  // Matches by recipe name (case-insensitive). If no match exists, tells
+  // the user to run the recipe import first.
+  const lockInEdits = async () => {
+    if (locking || !editedIngredients) return;
+    setLocking(true);
+    setLockMsg(null);
+    try {
+      const name = plan.name || '';
+      const { data, error: findErr } = await supabase
+        .from('fuel_saved_meals')
+        .select('id, ingredients')
+        .eq('user_id', SHARED_USER_ID)
+        .ilike('name', name);
+      if (findErr) throw findErr;
+      if (!data || data.length === 0) {
+        setLockMsg('No saved recipe matches this name. Run "Import meal-planner recipes" in Settings first.');
+        return;
+      }
+      // Convert the edited per-recipe ingredients (qty already per-serving)
+      // into the saved-meal format. Recompute macros via per100g/grams later
+      // if needed; for now, write the {n,q,u} edits as-is.
+      const target = data[0];
+      const merged = (target.ingredients || []).map((it) => {
+        const match = editedIngredients.find((e) => (e.n || '').toLowerCase() === (it.name || '').toLowerCase());
+        if (!match) return it;
+        return { ...it, name: match.n, qty: match.q, unit: match.u };
+      });
+      // Also append any ingredients the AI added that weren't in the original
+      const existingNames = new Set((target.ingredients || []).map((i) => (i.name || '').toLowerCase()));
+      for (const e of editedIngredients) {
+        if (!existingNames.has((e.n || '').toLowerCase())) {
+          merged.push({ name: e.n, qty: e.q, unit: e.u, fdcId: null, kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sodium_mg: 0, source: 'ai_added' });
+        }
+      }
+      const { error: updateErr } = await supabase
+        .from('fuel_saved_meals')
+        .update({ ingredients: merged })
+        .eq('id', target.id);
+      if (updateErr) throw updateErr;
+      setLockMsg('Locked into your saved recipe. Edit any per-ingredient details in Settings → Saved tab.');
+    } catch (e) {
+      setLockMsg('Save failed: ' + (e.message || String(e)));
+    } finally {
+      setLocking(false);
     }
   };
 
@@ -190,20 +241,37 @@ export default function PlannedMealBlock({ plan, slot, onAddPrefilled, onAfterLo
           {aiBusy ? '…' : 'Apply'}
         </button>
         {editedIngredients && !aiBusy && (
-          <button
-            type="button"
-            onClick={onResetEdits}
-            className="fuel-btn fuel-btn-ghost"
-            style={{ padding: '6px 10px', fontSize: 12 }}
-            title="Reset to planner's version"
-          >
-            Reset
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={lockInEdits}
+              disabled={locking}
+              className="fuel-btn"
+              style={{ padding: '6px 10px', fontSize: 12, color: 'var(--accent-bright)' }}
+              title="Save these edits to the saved recipe"
+            >
+              {locking ? 'Saving…' : 'Lock in'}
+            </button>
+            <button
+              type="button"
+              onClick={onResetEdits}
+              className="fuel-btn fuel-btn-ghost"
+              style={{ padding: '6px 10px', fontSize: 12 }}
+              title="Reset to planner's version"
+            >
+              Reset
+            </button>
+          </>
         )}
       </form>
       {aiSummary && (
         <div style={{ fontSize: 11, color: 'var(--accent-bright)', marginTop: 6 }}>
           {aiSummary}
+        </div>
+      )}
+      {lockMsg && (
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
+          {lockMsg}
         </div>
       )}
       {aiErr && (
