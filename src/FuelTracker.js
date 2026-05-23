@@ -18,6 +18,7 @@ import { isReviewDue, getRecentReviews } from './lib/review';
 import { checkDietBreakNeeded, deriveMacroTargets } from './lib/algorithm';
 import { MACRO_PRESETS } from './lib/constants';
 import { fetchMealPlannerRow, resolveTodaysSlots } from './lib/mealPlanner';
+import { importAllPlannerRecipes, importAllPlannerRecipesWithAI } from './lib/recipeImport';
 import AddFoodSheet from './components/AddFoodSheet';
 import PotTracker from './components/PotTracker';
 import PlannedMealBlock from './components/PlannedMealBlock';
@@ -706,7 +707,60 @@ function SettingsScreen({ onSignOut, settings, missingTable, onSettingsSaved, on
           </span>
         )}
       </div>
+      <ImportRecipesButton />
       <button className="fuel-btn fuel-btn-ghost" onClick={onSignOut}>Sign out</button>
+    </div>
+  );
+}
+
+function ImportRecipesButton() {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [progress, setProgress] = useState(null);
+
+  const runAi = async () => {
+    if (busy) return;
+    setBusy(true); setResult(null); setProgress(null);
+    const r = await importAllPlannerRecipesWithAI({ onProgress: (p) => setProgress(p) });
+    setBusy(false); setResult(r);
+  };
+  const runHeuristic = async () => {
+    if (busy) return;
+    setBusy(true); setResult(null); setProgress(null);
+    const r = await importAllPlannerRecipes();
+    setBusy(false); setResult(r);
+  };
+
+  const pct = progress ? Math.round((progress.done / progress.total) * 100) : 0;
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <button
+        onClick={runAi}
+        disabled={busy}
+        className="fuel-btn fuel-btn-primary"
+        style={{ width: '100%', padding: '12px', fontSize: 13 }}
+      >
+        {busy ? `Importing with AI… ${pct}%` : 'Import recipes — AI match each ingredient'}
+      </button>
+      {progress && busy && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-tertiary)', textAlign: 'center' }}>
+          {progress.done}/{progress.total} · {progress.meal_name}{progress.ingredient_name ? ` → ${progress.ingredient_name}` : ''}
+        </div>
+      )}
+      <button
+        onClick={runHeuristic}
+        disabled={busy}
+        className="fuel-btn fuel-btn-ghost"
+        style={{ width: '100%', padding: '8px', fontSize: 11, marginTop: 6 }}
+      >
+        Fast import (heuristic seed, no AI)
+      </button>
+      {result && (
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center' }}>
+          Inserted <strong>{result.inserted}</strong>, skipped {result.skipped} (already saved){result.errors.length > 0 ? `, ${result.errors.length} errors` : ''}.
+        </div>
+      )}
     </div>
   );
 }
