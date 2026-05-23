@@ -1,3 +1,4 @@
+// rebuild trigger — Cloudflare deploy queue kick
 /**
  * Bulk-import every recipe from sharedMealData into fuel_saved_meals.
  * Each meal becomes one row with locked-in USDA matches per ingredient.
