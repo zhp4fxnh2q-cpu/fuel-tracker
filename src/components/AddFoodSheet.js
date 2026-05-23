@@ -19,15 +19,15 @@ import { SOURCE } from '../lib/constants';
 
 const DEBOUNCE_MS = 300;
 const TABS = [
-  { id: 'recent', label: 'Recent', enabled: true },
-  { id: 'favorites', label: 'Favorites', enabled: true },
-  { id: 'saved', label: 'Saved', enabled: true },
-  { id: 'usda', label: 'USDA', enabled: true },
   { id: 'meal_planner', label: 'Meal planner', enabled: true },
+  { id: 'usda', label: 'USDA', enabled: true },
+  { id: 'recent', label: 'Recent', enabled: true },
+  { id: 'saved', label: 'Saved', enabled: true },
+  { id: 'favorites', label: 'Favorites', enabled: true },
 ];
 
 export default function AddFoodSheet({ open, mealSlot, prefill, onClose, onLogged, settings }) {
-  const [tab, setTab] = useState('recent');
+  const [tab, setTab] = useState('meal_planner');
   const [scannerOpen, setScannerOpen] = useState(false);
   const [recents, setRecents] = useState([]);
   const [recentsLoading, setRecentsLoading] = useState(false);
