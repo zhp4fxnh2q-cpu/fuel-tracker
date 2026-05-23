@@ -299,7 +299,6 @@ export async function importAllPlannerRecipesWithAI({ onProgress } = {}) {
 
     const ingredients = INGREDIENTS_DATA[meal.id] || meal.ingredients || [];
     const locked = [];
-    let failedForThisMeal = false;
     for (const ing of ingredients) {
       try {
         const match = await aiResolveIngredient(ing, meal);
@@ -329,7 +328,7 @@ export async function importAllPlannerRecipesWithAI({ onProgress } = {}) {
             reasoning: 'fallback (AI match failed)',
           });
         } else {
-          failedForThisMeal = true;
+          // (no fallback — drop ingredient)
         }
       }
       done++;
