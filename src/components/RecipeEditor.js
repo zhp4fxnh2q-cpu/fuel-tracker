@@ -174,6 +174,9 @@ export default function RecipeEditor({ open, meal, onClose, onSaved }) {
                   {' '}{it.unit || it.portion_label || ''}
                   {' '}· {it.grams ? `${Math.round(it.grams)}g · ` : ''}{Math.round(it.kcal)} kcal
                   {it.unresolved && <span style={{ color: 'var(--warn)' }}> · NO MATCH</span>}
+                  {!it.unresolved && it.reasoning && it.reasoning.toLowerCase().includes('fallback') && (
+                    <span style={{ color: 'var(--warn)' }}> · FALLBACK — review</span>
+                  )}
                 </div>
               </div>
               <button
