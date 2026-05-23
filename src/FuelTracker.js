@@ -311,46 +311,6 @@ function TodayScreen({ settings, entries, loading, planSlots, onAddFood, onDelet
     </div>
   );
 }
-
-function MacroCard({ label, current, target, unit, floor }) {
-  const safeTarget = target > 0 ? target : 1;
-  const ratio = current / safeTarget;
-  const ringSize = 56;
-  const stroke = 5;
-  const radius = (ringSize - stroke) / 2;
-  const circ = 2 * Math.PI * radius;
-  const displayPct = Math.max(0, Math.min(ratio, 1.5));
-  const dashOffset = circ * (1 - Math.min(displayPct, 1));
-  const remaining = Math.max(0, target - current);
-  const over = current > target;
-  return (
-    <div className="fuel-card" style={{ padding: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
-      <div style={{ position: 'relative', width: ringSize, height: ringSize, flexShrink: 0 }}>
-        <svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} style={{ transform: 'rotate(-90deg)' }}>
-          <circle cx={ringSize/2} cy={ringSize/2} r={radius}
-            stroke="rgba(255,255,255,0.10)" strokeWidth={stroke} fill="none" />
-          <circle cx={ringSize/2} cy={ringSize/2} r={radius}
-            stroke={over ? '#f59e0b' : 'url(#fuel-ring)'} strokeWidth={stroke} fill="none"
-            strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={dashOffset}
-            style={{ transition: 'stroke-dashoffset 400ms ease' }} />
-        </svg>
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, color: over ? 'var(--warn)' : 'var(--text-primary)' }}>
-          {Math.round(displayPct * 100)}%
-        </div>
-      </div>
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div className="fuel-label">{label}{floor && <span style={{ color: 'var(--text-tertiary)', marginLeft: 4 }}>· min</span>}</div>
-        <div style={{ fontSize: 18, fontWeight: 600, marginTop: 2, lineHeight: 1.1 }}>
-          {Math.round(current)}<span style={{ color: 'var(--text-tertiary)', fontSize: 12, fontWeight: 400 }}>{` / ${target}${unit}`}</span>
-        </div>
-        <div style={{ fontSize: 10, color: over ? 'var(--warn)' : 'var(--text-tertiary)', marginTop: 4, letterSpacing: '0.06em' }}>
-          {over ? `OVER ${Math.round(current - target)}${unit}` : `${Math.round(remaining)}${unit} LEFT`}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function MealSection({ slot, items, onAdd, onAddPrefilled, onDelete, settings, onToggleFavorite, plan, onAfterLogAll }) {
   const slotKcal = items.reduce((s, e) => s + (e.kcal || 0), 0);
   return (
